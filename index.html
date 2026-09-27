@@ -117,22 +117,32 @@
     };
     const nominatimLang = () => langSelect.value;
 
-    // City name from OpenStreetMap Nominatim, cached per point and language. Fetched only when a popup opens.
+    // {city, region} from OpenStreetMap Nominatim, cached per point and language; null on failure.
+    // Requests are spaced NOMINATIM_GAP_MS apart (Nominatim limit: 1 request per second).
+    const NOMINATIM_GAP_MS = 1100;
     const placeCache = new Map();
-    function placeName(p) {
+    let nextFetchAt = 0;
+    function address(p) {
       const lang = nominatimLang();
       const key = `${lang},${p.lat.toFixed(3)},${p.lng.toFixed(3)}`;
       if (!placeCache.has(key)) {
         const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=10&accept-language=${lang}&lat=${p.lat}&lon=${p.lng}`;
-        placeCache.set(key, fetch(url).then((r) => r.json()).then((j) => {
+        const wait = Math.max(0, nextFetchAt - Date.now());
+        nextFetchAt = Date.now() + wait + NOMINATIM_GAP_MS;
+        placeCache.set(key, new Promise((ok) => setTimeout(ok, wait)).then(() => fetch(url)).then((r) => r.json()).then((j) => {
           // City, then its département (France) or province/region; the region is skipped when it repeats the city.
           const a = j.address || {};
           const city = a.city || a.town || a.village || a.municipality || j.name;
           const region = [a.state_district, a.county, a.province, a.state].find((r) => r && r !== city);
-          return [city, region].filter(Boolean).join(', ') || 'unknown place';
-        }).catch(() => { placeCache.delete(key); return 'address unavailable'; }));
+          return { city, region };
+        }).catch(() => { placeCache.delete(key); return null; }));
       }
       return placeCache.get(key);
+    }
+
+    // "City, region" for a popup. Fetched only when a popup opens.
+    function placeName(p) {
+      return address(p).then((a) => !a ? 'address unavailable' : [a.city, a.region].filter(Boolean).join(', ') || 'unknown place');
     }
 
     function popup(p, label, place = '…') {
@@ -140,12 +150,20 @@
         + `<br>(${p.lat.toFixed(3)}, ${p.lng.toFixed(3)})<br>speed ${p.speed} km/h`;
     }
 
-    // Bind a popup that fills in the city name once it has loaded.
+    // Bind a popup that opens on hover (tap on touch screens) and fills in the city name once it has loaded.
+    // The name is fetched only if the popup stays open briefly, so sweeping the mouse over the route
+    // does not flood Nominatim (limit: 1 request per second).
     function bindPlacePopup(marker, p, label) {
-      return marker.bindPopup(popup(p, label)).on('popupopen', (e) => {
-        e.popup.setContent(popup(p, label)); // drop a name left over from another language
-        placeName(p).then((place) => e.popup.setContent(popup(p, label, place)));
-      });
+      return marker.bindPopup(popup(p, label), { autoPan: false })
+        .on('mouseover', () => marker.openPopup())
+        .on('mouseout', () => marker.closePopup())
+        .on('popupopen', (e) => {
+          e.popup.setContent(popup(p, label)); // drop a name left over from another language
+          setTimeout(() => {
+            if (!e.popup.isOpen()) return;
+            placeName(p).then((place) => e.popup.setContent(popup(p, label, place)));
+          }, 300);
+        });
     }
 
     // Orange markers, thinned so none sit closer than MIN_MARKER_PX on screen at the current zoom.
@@ -166,6 +184,50 @@
       const marker = L.marker([p.lat, p.lng])
         .bindTooltip(text, { permanent: true, direction: 'top', offset: [-15, -12], className: 'ride-label' });
       return bindPlacePopup(marker, p, text);
+    }
+
+    // Ride summary, shown when a start or end marker is clicked.
+    const SUMMARY_MAX_SAMPLES = 12; // most points looked up along one ride, to keep Nominatim requests low
+    const SUMMARY_MIN_STEP_M = 5000;
+    const summaryPopup = L.popup({ offset: [1, -27], maxWidth: 320, autoPanPaddingTopLeft: [200, 20] }); // clear the rides box
+    let summaryRide = null;
+
+    // First and last point, plus points spaced evenly along the ride, to find the cities it passes.
+    function samplePoints(ride) {
+      const pts = ride.points;
+      const step = Math.max(SUMMARY_MIN_STEP_M, ride.km * 1000 / SUMMARY_MAX_SAMPLES);
+      const out = [pts[0]];
+      let sinceLast = 0;
+      for (let i = 1; i < pts.length; i++) {
+        sinceLast += L.latLng(pts[i - 1]).distanceTo(pts[i]);
+        if (sinceLast >= step) { out.push(pts[i]); sinceLast = 0; }
+      }
+      if (out[out.length - 1] !== pts[pts.length - 1]) out.push(pts[pts.length - 1]);
+      return out;
+    }
+
+    function summaryHtml(ride, cities, loading) {
+      const first = ride.points[0], last = ride.points[ride.points.length - 1];
+      const min = Math.round((new Date(last.date) - new Date(first.date)) / 60000);
+      const route = cities.join(' → ') + (loading ? ' → …' : '');
+      return `<b>${dayMonth(first.date, ride.offsetMs)} ride</b><br>${route.replace(/^ → /, '')}`
+        + `<br>${ride.km.toFixed(1)} km, ${Math.floor(min / 60)}h ${String(min % 60).padStart(2, '0')}m`
+        + `<br>${dayTime(first.date, ride.offsetMs)} → ${dayTime(last.date, ride.offsetMs)}`;
+    }
+
+    // Open the summary and fill in the cities one by one as Nominatim answers. Stops when the popup closes.
+    async function showSummary(ride, latlng) {
+      summaryRide = ride;
+      summaryPopup.setLatLng(latlng).setContent(summaryHtml(ride, [], true)).openOn(map);
+      const cities = [];
+      const samples = samplePoints(ride);
+      for (let i = 0; i < samples.length; i++) {
+        const a = await address(samples[i]);
+        if (summaryRide !== ride || !summaryPopup.isOpen()) return;
+        const city = a && (a.city || a.region);
+        if (city && city !== cities[cities.length - 1]) cities.push(city);
+        summaryPopup.setContent(summaryHtml(ride, cities, i < samples.length - 1));
+      }
     }
 
     function drawRidesBox(rides) {
@@ -195,8 +257,11 @@
 
       rides.forEach((r) => {
         const first = r.points[0], last = r.points[r.points.length - 1];
-        labelMarker(first, `${dayMonth(first.date, r.offsetMs)} start`).addTo(layer);
-        labelMarker(last, `${dayMonth(last.date, r.offsetMs)} end`).addTo(layer);
+        // The hover popup's own click handler runs first and closes it; then the summary opens.
+        [[first, 'start'], [last, 'end']].forEach(([p, text]) => {
+          const marker = labelMarker(p, `${dayMonth(p.date, r.offsetMs)} ${text}`).addTo(layer);
+          marker.on('click', () => showSummary(r, marker.getLatLng()));
+        });
       });
 
       drawPoints(points);
