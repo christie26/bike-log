@@ -136,7 +136,7 @@
     }
 
     function popup(p, label, place = '…') {
-      return `<b>${label}</b> (${p.file})<br>${dayTime(p.date, p.offsetMs)}<br>${place}`
+      return `<b>${label}</b> ${dayTime(p.date, p.offsetMs)}<br>${place}`
         + `<br>(${p.lat.toFixed(3)}, ${p.lng.toFixed(3)})<br>speed ${p.speed} km/h`;
     }
 
