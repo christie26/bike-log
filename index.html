@@ -16,12 +16,11 @@
   <script type="module">
     import { Decoder, Stream } from 'https://cdn.jsdelivr.net/npm/@garmin/fitsdk@21.217.0/+esm';
 
-    const map = L.map('map').setView([0, 0], 2);
+    const map = L.map('map', { preferCanvas: true }).setView([0, 0], 2);
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       attribution: '&copy; OpenStreetMap contributors',
     }).addTo(map);
     const layer = L.layerGroup().addTo(map);
-    const MARKER_COUNT = 8; // how many intermediate points to show
 
     // Decode a .fit file into [{date, lat, lng, speed}]. FIT stores positions in semicircles and speed in m/s.
     function parseFit(buffer) {
@@ -56,9 +55,8 @@
       const line = L.polyline(points.map((p) => [p.lat, p.lng]), { color: 'blue', weight: 4 }).addTo(layer);
       map.fitBounds(line.getBounds(), { padding: [30, 30] });
 
-      const step = Math.max(1, Math.floor(points.length / (MARKER_COUNT + 1)));
-      for (let i = step; i < points.length - 1; i += step) {
-        L.circleMarker([points[i].lat, points[i].lng], { radius: 5, color: 'orange' })
+      for (let i = 1; i < points.length - 1; i++) {
+        L.circleMarker([points[i].lat, points[i].lng], { radius: 3, color: 'orange' })
           .bindPopup(popup(points[i], `Point ${i}`)).addTo(layer);
       }
       const first = points[0], last = points[points.length - 1];
