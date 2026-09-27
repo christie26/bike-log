@@ -127,6 +127,7 @@
     langSelect.onchange = () => {
       try { localStorage.setItem('lang', langSelect.value); } catch {}
       map.closePopup();
+      queueCities(allRides.map(cityJob)); // city lists in the new language
     };
     const nominatimLang = () => langSelect.value;
 
@@ -209,7 +210,6 @@
     const SUMMARY_MAX_SAMPLES = 12; // most points looked up along one ride, to keep Nominatim requests low
     const SUMMARY_MIN_STEP_M = 5000;
     const summaryPopup = L.popup({ offset: [0, 7 - END_RADIUS], maxWidth: 320, autoPanPaddingTopLeft: [200, 20] }); // clear the rides box
-    let summaryRide = null;
 
     // First and last point, plus points spaced evenly along the ride, to find the cities it passes.
     function samplePoints(ride) {
@@ -234,19 +234,61 @@
         + `<br>${dayTime(first.date, ride.offsetMs)} → ${dayTime(last.date, ride.offsetMs)}`;
     }
 
-    // Open the summary and fill in the cities one by one as Nominatim answers. Stops when the popup closes.
-    async function showSummary(ride, latlng) {
-      summaryRide = ride;
-      summaryPopup.setLatLng(latlng).setContent(summaryHtml(ride, [], true)).openOn(map);
-      const cities = [];
-      const samples = samplePoints(ride);
-      for (let i = 0; i < samples.length; i++) {
-        const a = await address(samples[i]);
-        if (summaryRide !== ride || !summaryPopup.isOpen()) return;
-        const city = a && (a.city || a.region);
-        if (city && city !== cities[cities.length - 1]) cities.push(city);
-        summaryPopup.setContent(summaryHtml(ride, cities, i < samples.length - 1));
+    // Cities of each ride, looked up in the background after the page loads and kept in localStorage,
+    // so the summary opens without waiting for Nominatim. One job per ride and language.
+    const CITIES_STORE = 'rideCities-v1'; // bump when the sampling changes, to drop stale lists
+    let storedCities = {};
+    try { storedCities = JSON.parse(localStorage.getItem(CITIES_STORE)) || {}; } catch {}
+    const cityJobs = new Map();
+    const cityQueue = [];
+    let cityWorkerBusy = false;
+
+    function cityJob(ride) {
+      const lang = nominatimLang();
+      const key = `${lang}|${ride.file}|${ride.points[0].date}`;
+      if (!cityJobs.has(key)) {
+        const stored = storedCities[key];
+        cityJobs.set(key, stored
+          ? { key, lang, ride, cities: stored, done: true }
+          : { key, lang, ride, cities: [], done: false, samples: samplePoints(ride), next: 0 });
       }
+      return cityJobs.get(key);
+    }
+
+    // Queue the jobs (first = looked up first) and start the worker. Requests go one at a time,
+    // so a job moved to the front is served next.
+    function queueCities(jobs, first = false) {
+      jobs = jobs.filter((j) => !j.done);
+      cityQueue.splice(0, cityQueue.length, ...(first ? [...jobs, ...cityQueue] : [...cityQueue, ...jobs])
+        .filter((j, i, all) => all.indexOf(j) === i));
+      runCityWorker();
+    }
+
+    async function runCityWorker() {
+      if (cityWorkerBusy) return;
+      cityWorkerBusy = true;
+      while (cityQueue.length) {
+        const job = cityQueue[0];
+        if (job.done || job.lang !== nominatimLang()) { cityQueue.shift(); continue; }
+        const a = await address(job.samples[job.next]);
+        const city = a && (a.city || a.region);
+        if (city && city !== job.cities[job.cities.length - 1]) job.cities.push(city);
+        if (++job.next === job.samples.length) {
+          job.done = true;
+          storedCities[job.key] = job.cities;
+          try { localStorage.setItem(CITIES_STORE, JSON.stringify(storedCities)); } catch {}
+        }
+        if (summaryJob === job && summaryPopup.isOpen()) summaryPopup.setContent(summaryHtml(job.ride, job.cities, !job.done));
+      }
+      cityWorkerBusy = false;
+    }
+
+    // Open the summary with the cities found so far; the worker fills in the rest.
+    let summaryJob = null;
+    function showSummary(ride, latlng) {
+      summaryJob = cityJob(ride);
+      summaryPopup.setLatLng(latlng).setContent(summaryHtml(ride, summaryJob.cities, !summaryJob.done)).openOn(map);
+      queueCities([summaryJob], true);
     }
 
     function drawRidesBox(rides) {
@@ -257,6 +299,7 @@
         `<table><tbody>${rows}</tbody><tfoot><tr><td>Total</td><td>${total.toFixed(1)} km</td></tr></tfoot></table>`;
     }
 
+    let allRides = [];
     async function loadAll() {
       const files = await (await fetch('coordinate/files.json')).json();
       const buffers = await Promise.all(files.map(async (f) =>
@@ -269,6 +312,8 @@
       console.log(rides);
       drawRidesBox(rides);
       if (!points.length) return;
+      allRides = rides;
+      queueCities(rides.map(cityJob));
 
       // Separate line per ride, so different days are not joined by a straight line.
       const line = L.polyline(rides.map((r) => r.points.map((p) => [p.lat, p.lng])), { color: LINE_COLOR, weight: 4 }).addTo(layer);
