@@ -1,0 +1,70 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Coordinate Map</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <style>
+    html, body, #map { height: 100%; margin: 0; }
+    #bar { position: absolute; top: 10px; right: 10px; z-index: 1000; background: #fff; padding: 6px; border-radius: 4px; font: 14px sans-serif; }
+  </style>
+</head>
+<body>
+  <div id="bar"></div>
+  <div id="map"></div>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+    const map = L.map('map').setView([0, 0], 2);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; OpenStreetMap contributors',
+    }).addTo(map);
+    const layer = L.layerGroup().addTo(map);
+    const MARKER_COUNT = 8; // how many intermediate points to show
+
+    // Parse CSV into [{date, lat, lng, speed}], tolerant of header spelling.
+    function parseCsv(text) {
+      const lines = text.trim().split(/\r?\n/);
+      const header = lines[0].split(',').map((h) => h.trim().toLowerCase());
+      const find = (re) => header.findIndex((h) => re.test(h));
+      const iDate = find(/date|time/);
+      const iLng = find(/^(lon|lng|long)/);
+      const iLat = find(/^(lat|lag)/);
+      const iSpeed = find(/speed/);
+      return lines.slice(1).map((line) => {
+        const c = line.split(',');
+        return { date: c[iDate], lat: +c[iLat], lng: +c[iLng], speed: +c[iSpeed] };
+      }).filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lng));
+    }
+
+    function popup(p, label) {
+      return `<b>${label}</b> (${p.file})<br>${p.date}<br>lat ${p.lat}, lng ${p.lng}<br>speed ${p.speed}`;
+    }
+
+    async function loadAll() {
+      const files = await (await fetch('/api/files')).json();
+      const texts = await Promise.all(files.map(async (f) =>
+        (await fetch('/coordinate/' + encodeURIComponent(f))).text()));
+      // Merge every file into one array, sorted by time.
+      const points = texts.flatMap((t, i) => parseCsv(t).map((p) => ({ ...p, file: files[i] })))
+        .sort((a, b) => new Date(a.date) - new Date(b.date));
+      console.log(points);
+      document.getElementById('bar').textContent = `${files.length} files, ${points.length} points`;
+      if (!points.length) return;
+
+      const line = L.polyline(points.map((p) => [p.lat, p.lng]), { color: 'blue', weight: 4 }).addTo(layer);
+      map.fitBounds(line.getBounds(), { padding: [30, 30] });
+
+      const step = Math.max(1, Math.floor(points.length / (MARKER_COUNT + 1)));
+      for (let i = step; i < points.length - 1; i += step) {
+        L.circleMarker([points[i].lat, points[i].lng], { radius: 5, color: 'orange' })
+          .bindPopup(popup(points[i], `Point ${i}`)).addTo(layer);
+      }
+      const first = points[0], last = points[points.length - 1];
+      L.marker([first.lat, first.lng]).bindPopup(popup(first, 'Start')).addTo(layer);
+      L.marker([last.lat, last.lng]).bindPopup(popup(last, 'End')).addTo(layer);
+    }
+
+    loadAll();
+  </script>
+</body>
+</html>
