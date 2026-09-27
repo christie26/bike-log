@@ -14,7 +14,9 @@
     #rides tfoot td { border-top: 1px solid #ccc; font-weight: bold; }
     #lang-box { position: absolute; bottom: 20px; left: 10px; z-index: 1000; background: #fff; padding: 6px 10px; border-radius: 4px;
       font: 14px sans-serif; box-shadow: 0 1px 4px rgba(0, 0, 0, .3); }
-    .ride-label { font-weight: bold; }
+    /* Start and end labels: rounded box without the pointer; colors from LABEL_BG_COLOR and LABEL_TEXT_COLOR */
+    .ride-label { font-weight: bold; color: var(--label-text); background: var(--label-bg); border-color: var(--label-bg); border-radius: 6px; }
+    .ride-label::before { display: none; }
     .leaflet-tile-pane { filter: saturate(0.4) brightness(1.05); } /* muted base map only; route and markers keep their colors */
   </style>
 </head>
@@ -46,11 +48,15 @@
     const FIT_EPOCH_S = 631065600; // FIT times count from 1989-12-31T00:00:00Z
     const MIN_MARKER_PX = 20; // minimum screen distance between route dots
     const RIDE_GAP_MS = 4 * 3600 * 1000; // a pause longer than this starts a new ride (e.g. overnight)
-    const POINT_COLOR = '#ffa500'; // dots along the route
-    const LINE_COLOR = '#ffa500'; // route line
-    const START_COLOR = '#ffa500'; // outline of the start circle
-    const END_COLOR = '#008000'; // outline of the end circle
+    const POINT_COLOR = '#3f798e'; // dots along the route
+    const LINE_COLOR = '#5a9baa'; // route line
+    const START_COLOR = '#2a5674'; // outline of the start circle
+    const END_COLOR = '#2a5674'; // outline of the end circle
     const END_RADIUS = 6; // start and end circles; route dots have radius 3
+    const LABEL_BG_COLOR = '#e9f2f3'; // background of the start and end labels; last 2 digits = opacity (b3 = 70%)
+    const LABEL_TEXT_COLOR = '#2a5674'; // text of the start and end labels
+    document.documentElement.style.setProperty('--label-bg', LABEL_BG_COLOR);
+    document.documentElement.style.setProperty('--label-text', LABEL_TEXT_COLOR);
 
     // Decode a .fit file into rides: [{file, points [{date, lat, lng, speed}], km, offsetMs}].
     // A multi-day file is split into one ride per pause longer than RIDE_GAP_MS.
@@ -183,7 +189,8 @@
         const px = map.project([p.lat, p.lng], zoom);
         if (last && px.distanceTo(last) < MIN_MARKER_PX) return;
         last = px;
-        bindPlacePopup(L.circleMarker([p.lat, p.lng], { radius: 3, color: POINT_COLOR, fillOpacity: 1 }), p, `# ${i}`).addTo(pointLayer);
+        const dot = L.circleMarker([p.lat, p.lng], { radius: 3, color: POINT_COLOR, fillColor: '#ffffff', weight: 2, fillOpacity: 1 });
+        bindPlacePopup(dot, p, `# ${i}`).addTo(pointLayer);
       });
     }
 
