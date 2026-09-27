@@ -12,11 +12,24 @@
     #rides td { padding: 2px 6px; }
     #rides td:last-child { text-align: right; }
     #rides tfoot td { border-top: 1px solid #ccc; font-weight: bold; }
+    #lang-box { position: absolute; bottom: 20px; left: 10px; z-index: 1000; background: #fff; padding: 6px 10px; border-radius: 4px;
+      font: 14px sans-serif; box-shadow: 0 1px 4px rgba(0, 0, 0, .3); }
     .ride-label { font-weight: bold; }
   </style>
 </head>
 <body>
-  <div id="rides"></div>
+  <div id="rides">
+    <div id="ride-list"></div>
+  </div>
+  <label id="lang-box">Names
+    <select id="lang">
+      <option value="en">🇬🇧 English</option>
+      <option value="fr">🇫🇷 Français</option>
+      <option value="es">🇲🇽 Español</option>
+      <option value="ko">🇰🇷 한국어</option>
+      <option value="ja">🇯🇵 日本語</option>
+    </select>
+  </label>
   <div id="map"></div>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script type="module">
@@ -94,28 +107,43 @@
       return `${t.dd}/${t.mm} ${t.HH}:${t.MM}`;
     }
 
-    // City name from OpenStreetMap Nominatim, cached per point. Fetched only when a popup opens.
+    // Language of place names, passed to Nominatim as accept-language.
+    const langSelect = document.getElementById('lang');
+    try { langSelect.value = localStorage.getItem('lang') || 'en'; } catch {}
+    if (!langSelect.value) langSelect.value = 'en'; // stored value no longer offered
+    langSelect.onchange = () => {
+      try { localStorage.setItem('lang', langSelect.value); } catch {}
+      map.closePopup();
+    };
+    const nominatimLang = () => langSelect.value;
+
+    // City name from OpenStreetMap Nominatim, cached per point and language. Fetched only when a popup opens.
     const placeCache = new Map();
     function placeName(p) {
-      const key = `${p.lat.toFixed(3)},${p.lng.toFixed(3)}`;
+      const lang = nominatimLang();
+      const key = `${lang},${p.lat.toFixed(3)},${p.lng.toFixed(3)}`;
       if (!placeCache.has(key)) {
-        const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=10&lat=${p.lat}&lon=${p.lng}`;
+        const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=10&accept-language=${lang}&lat=${p.lat}&lon=${p.lng}`;
         placeCache.set(key, fetch(url).then((r) => r.json()).then((j) => {
+          // City, then its département (France) or province/region; the region is skipped when it repeats the city.
           const a = j.address || {};
-          return a.city || a.town || a.village || a.municipality || a.county || j.name || 'unknown place';
+          const city = a.city || a.town || a.village || a.municipality || j.name;
+          const region = [a.state_district, a.county, a.province, a.state].find((r) => r && r !== city);
+          return [city, region].filter(Boolean).join(', ') || 'unknown place';
         }).catch(() => { placeCache.delete(key); return 'address unavailable'; }));
       }
       return placeCache.get(key);
     }
 
     function popup(p, label, place = '…') {
-      return `<b>${label}</b> (${p.file})<br>${place}<br>${dayTime(p.date, p.offsetMs)}`
+      return `<b>${label}</b> (${p.file})<br>${dayTime(p.date, p.offsetMs)}<br>${place}`
         + `<br>(${p.lat.toFixed(3)}, ${p.lng.toFixed(3)})<br>speed ${p.speed} km/h`;
     }
 
     // Bind a popup that fills in the city name once it has loaded.
     function bindPlacePopup(marker, p, label) {
       return marker.bindPopup(popup(p, label)).on('popupopen', (e) => {
+        e.popup.setContent(popup(p, label)); // drop a name left over from another language
         placeName(p).then((place) => e.popup.setContent(popup(p, label, place)));
       });
     }
@@ -144,7 +172,7 @@
       const rows = rides.map((r) =>
         `<tr><td>${dayMonth(r.points[0].date, r.offsetMs)}</td><td>${r.km.toFixed(1)} km</td></tr>`).join('');
       const total = rides.reduce((sum, r) => sum + r.km, 0);
-      document.getElementById('rides').innerHTML =
+      document.getElementById('ride-list').innerHTML =
         `<table><tbody>${rows}</tbody><tfoot><tr><td>Total</td><td>${total.toFixed(1)} km</td></tr></tfoot></table>`;
     }
 
