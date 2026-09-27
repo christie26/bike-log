@@ -6,11 +6,17 @@
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <style>
     html, body, #map { height: 100%; margin: 0; }
-    #bar { position: absolute; top: 10px; right: 10px; z-index: 1000; background: #fff; padding: 6px; border-radius: 4px; font: 14px sans-serif; }
+    #rides { position: absolute; top: 80px; left: 10px; z-index: 1000; background: #fff; padding: 8px 12px; border-radius: 4px;
+      font: 14px sans-serif; box-shadow: 0 1px 4px rgba(0, 0, 0, .3); max-height: 70vh; overflow-y: auto; }
+    #rides table { border-collapse: collapse; }
+    #rides td { padding: 2px 6px; }
+    #rides td:last-child { text-align: right; }
+    #rides tfoot td { border-top: 1px solid #ccc; font-weight: bold; }
+    .ride-label { font-weight: bold; }
   </style>
 </head>
 <body>
-  <div id="bar"></div>
+  <div id="rides"></div>
   <div id="map"></div>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script type="module">
@@ -22,46 +28,151 @@
     }).addTo(map);
     const layer = L.layerGroup().addTo(map);
 
-    // Decode a .fit file into [{date, lat, lng, speed}]. FIT stores positions in semicircles and speed in m/s.
-    function parseFit(buffer) {
+    const FIT_EPOCH_S = 631065600; // FIT times count from 1989-12-31T00:00:00Z
+    const MIN_MARKER_PX = 20; // minimum screen distance between orange markers
+    const RIDE_GAP_MS = 4 * 3600 * 1000; // a pause longer than this starts a new ride (e.g. overnight)
+
+    // Decode a .fit file into rides: [{file, points [{date, lat, lng, speed}], km, offsetMs}].
+    // A multi-day file is split into one ride per pause longer than RIDE_GAP_MS.
+    // FIT stores positions in semicircles and speed in m/s.
+    function parseFit(buffer, file) {
       const { messages, errors } = new Decoder(Stream.fromArrayBuffer(buffer)).read();
-      if (errors.length) console.warn(errors);
+      if (errors.length) console.warn(file, errors);
       const toDeg = (semi) => semi * 180 / 2 ** 31;
-      return (messages.recordMesgs || [])
+
+      // Local time offset recorded by the device; fall back to the viewer's timezone.
+      const act = (messages.activityMesgs || [])[0];
+      const offsetMs = act && act.localTimestamp != null && act.timestamp
+        ? (act.localTimestamp + FIT_EPOCH_S) * 1000 - act.timestamp.getTime()
+        : null;
+
+      const points = (messages.recordMesgs || [])
         .filter((r) => r.positionLat != null && r.positionLong != null)
         .map((r) => ({
+          file,
+          offsetMs,
           date: r.timestamp.toISOString(),
           lat: toDeg(r.positionLat),
           lng: toDeg(r.positionLong),
           speed: +((r.enhancedSpeed ?? r.speed ?? NaN) * 3.6).toFixed(1), // km/h
-        }));
+        }))
+        .sort((a, b) => new Date(a.date) - new Date(b.date));
+
+      const segments = [];
+      points.forEach((p, i) => {
+        if (!i || new Date(p.date) - new Date(points[i - 1].date) > RIDE_GAP_MS) segments.push([]);
+        segments[segments.length - 1].push(p);
+      });
+      // Use the device's recorded distance for a single ride; otherwise sum the GPS track of each ride.
+      const sessionM = (messages.sessionMesgs || []).reduce((sum, s) => sum + (s.totalDistance || 0), 0);
+      return segments.map((seg) => {
+        let trackM = 0;
+        for (let i = 1; i < seg.length; i++) trackM += L.latLng(seg[i - 1]).distanceTo(seg[i]);
+        const km = ((segments.length === 1 && sessionM) || trackM) / 1000;
+        return { file, points: seg, km, offsetMs };
+      });
     }
 
-    function popup(p, label) {
-      return `<b>${label}</b> (${p.file})<br>${p.date}<br>lat ${p.lat}, lng ${p.lng}<br>speed ${p.speed} km/h`;
+    // Date parts in the ride's local time.
+    function localParts(iso, offsetMs) {
+      const t = new Date(iso);
+      const pad = (n) => String(n).padStart(2, '0');
+      if (offsetMs == null) return { dd: pad(t.getDate()), mm: pad(t.getMonth() + 1), HH: pad(t.getHours()), MM: pad(t.getMinutes()) };
+      const d = new Date(t.getTime() + offsetMs);
+      return { dd: pad(d.getUTCDate()), mm: pad(d.getUTCMonth() + 1), HH: pad(d.getUTCHours()), MM: pad(d.getUTCMinutes()) };
+    }
+
+    // "27/09"
+    function dayMonth(iso, offsetMs) {
+      const t = localParts(iso, offsetMs);
+      return `${t.dd}/${t.mm}`;
+    }
+
+    // "27/09 14:05"
+    function dayTime(iso, offsetMs) {
+      const t = localParts(iso, offsetMs);
+      return `${t.dd}/${t.mm} ${t.HH}:${t.MM}`;
+    }
+
+    // City name from OpenStreetMap Nominatim, cached per point. Fetched only when a popup opens.
+    const placeCache = new Map();
+    function placeName(p) {
+      const key = `${p.lat.toFixed(3)},${p.lng.toFixed(3)}`;
+      if (!placeCache.has(key)) {
+        const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=10&lat=${p.lat}&lon=${p.lng}`;
+        placeCache.set(key, fetch(url).then((r) => r.json()).then((j) => {
+          const a = j.address || {};
+          return a.city || a.town || a.village || a.municipality || a.county || j.name || 'unknown place';
+        }).catch(() => { placeCache.delete(key); return 'address unavailable'; }));
+      }
+      return placeCache.get(key);
+    }
+
+    function popup(p, label, place = '…') {
+      return `<b>${label}</b> (${p.file})<br>${place}<br>${dayTime(p.date, p.offsetMs)}`
+        + `<br>(${p.lat.toFixed(3)}, ${p.lng.toFixed(3)})<br>speed ${p.speed} km/h`;
+    }
+
+    // Bind a popup that fills in the city name once it has loaded.
+    function bindPlacePopup(marker, p, label) {
+      return marker.bindPopup(popup(p, label)).on('popupopen', (e) => {
+        placeName(p).then((place) => e.popup.setContent(popup(p, label, place)));
+      });
+    }
+
+    // Orange markers, thinned so none sit closer than MIN_MARKER_PX on screen at the current zoom.
+    const pointLayer = L.layerGroup().addTo(layer);
+    function drawPoints(points) {
+      pointLayer.clearLayers();
+      const zoom = map.getZoom();
+      let last = null;
+      points.forEach((p, i) => {
+        const px = map.project([p.lat, p.lng], zoom);
+        if (last && px.distanceTo(last) < MIN_MARKER_PX) return;
+        last = px;
+        bindPlacePopup(L.circleMarker([p.lat, p.lng], { radius: 3, color: 'orange' }), p, `# ${i}`).addTo(pointLayer);
+      });
+    }
+
+    function labelMarker(p, text) {
+      const marker = L.marker([p.lat, p.lng])
+        .bindTooltip(text, { permanent: true, direction: 'top', offset: [-15, -12], className: 'ride-label' });
+      return bindPlacePopup(marker, p, text);
+    }
+
+    function drawRidesBox(rides) {
+      const rows = rides.map((r) =>
+        `<tr><td>${dayMonth(r.points[0].date, r.offsetMs)}</td><td>${r.km.toFixed(1)} km</td></tr>`).join('');
+      const total = rides.reduce((sum, r) => sum + r.km, 0);
+      document.getElementById('rides').innerHTML =
+        `<table><tbody>${rows}</tbody><tfoot><tr><td>Total</td><td>${total.toFixed(1)} km</td></tr></tfoot></table>`;
     }
 
     async function loadAll() {
       const files = await (await fetch('coordinate/files.json')).json();
       const buffers = await Promise.all(files.map(async (f) =>
         (await fetch('coordinate/' + encodeURIComponent(f))).arrayBuffer()));
-      // Merge every file into one array, sorted by time.
-      const points = buffers.flatMap((b, i) => parseFit(b).map((p) => ({ ...p, file: files[i] })))
-        .sort((a, b) => new Date(a.date) - new Date(b.date));
-      console.log(points);
-      document.getElementById('bar').textContent = `${files.length} files, ${points.length} points`;
+      // Rides from all files, in time order.
+      const rides = buffers.flatMap((b, i) => parseFit(b, files[i]))
+        .filter((r) => r.points.length)
+        .sort((a, b) => new Date(a.points[0].date) - new Date(b.points[0].date));
+      const points = rides.flatMap((r) => r.points);
+      console.log(rides);
+      drawRidesBox(rides);
       if (!points.length) return;
 
-      const line = L.polyline(points.map((p) => [p.lat, p.lng]), { color: 'blue', weight: 4 }).addTo(layer);
+      // Separate line per ride, so different days are not joined by a straight line.
+      const line = L.polyline(rides.map((r) => r.points.map((p) => [p.lat, p.lng])), { color: 'blue', weight: 4 }).addTo(layer);
       map.fitBounds(line.getBounds(), { padding: [30, 30] });
 
-      for (let i = 1; i < points.length - 1; i++) {
-        L.circleMarker([points[i].lat, points[i].lng], { radius: 3, color: 'orange' })
-          .bindPopup(popup(points[i], `Point ${i}`)).addTo(layer);
-      }
-      const first = points[0], last = points[points.length - 1];
-      L.marker([first.lat, first.lng]).bindPopup(popup(first, 'Start')).addTo(layer);
-      L.marker([last.lat, last.lng]).bindPopup(popup(last, 'End')).addTo(layer);
+      rides.forEach((r) => {
+        const first = r.points[0], last = r.points[r.points.length - 1];
+        labelMarker(first, `${dayMonth(first.date, r.offsetMs)} start`).addTo(layer);
+        labelMarker(last, `${dayMonth(last.date, r.offsetMs)} end`).addTo(layer);
+      });
+
+      drawPoints(points);
+      map.on('zoomend', () => drawPoints(points));
     }
 
     loadAll();
