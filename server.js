@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 
 const PORT = process.env.PORT || 3000;
-const CSV_DIR = path.join(__dirname, 'coordinate');
+const DATA_DIR = path.join(__dirname, 'coordinate');
 const TYPES = { '.json': 'application/json', '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.csv': 'text/csv' };
 
 function send(res, status, body, type = 'text/plain') {
@@ -23,10 +23,6 @@ function serveFile(res, root, rel) {
 
 http.createServer((req, res) => {
   const url = decodeURIComponent(new URL(req.url, 'http://x').pathname);
-  // Local dev lists the CSVs live; GitHub Pages uses the committed coordinate/files.json.
-  if (url === '/coordinate/files.json') {
-    const files = fs.readdirSync(CSV_DIR).filter((f) => f.toLowerCase().endsWith('.csv'));
-    return send(res, 200, JSON.stringify(files), 'application/json');
-  }
+  
   serveFile(res, __dirname, url === '/' ? 'index.html' : url);
 }).listen(PORT, () => console.log(`http://localhost:${PORT}`));

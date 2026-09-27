@@ -13,7 +13,9 @@
   <div id="bar"></div>
   <div id="map"></div>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script>
+  <script type="module">
+    import { Decoder, Stream } from 'https://cdn.jsdelivr.net/npm/@garmin/fitsdk@21.217.0/+esm';
+
     const map = L.map('map').setView([0, 0], 2);
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       attribution: '&copy; OpenStreetMap contributors',
@@ -21,31 +23,31 @@
     const layer = L.layerGroup().addTo(map);
     const MARKER_COUNT = 8; // how many intermediate points to show
 
-    // Parse CSV into [{date, lat, lng, speed}], tolerant of header spelling.
-    function parseCsv(text) {
-      const lines = text.trim().split(/\r?\n/);
-      const header = lines[0].split(',').map((h) => h.trim().toLowerCase());
-      const find = (re) => header.findIndex((h) => re.test(h));
-      const iDate = find(/date|time/);
-      const iLng = find(/^(lon|lng|long)/);
-      const iLat = find(/^(lat|lag)/);
-      const iSpeed = find(/speed/);
-      return lines.slice(1).map((line) => {
-        const c = line.split(',');
-        return { date: c[iDate], lat: +c[iLat], lng: +c[iLng], speed: +c[iSpeed] };
-      }).filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lng));
+    // Decode a .fit file into [{date, lat, lng, speed}]. FIT stores positions in semicircles and speed in m/s.
+    function parseFit(buffer) {
+      const { messages, errors } = new Decoder(Stream.fromArrayBuffer(buffer)).read();
+      if (errors.length) console.warn(errors);
+      const toDeg = (semi) => semi * 180 / 2 ** 31;
+      return (messages.recordMesgs || [])
+        .filter((r) => r.positionLat != null && r.positionLong != null)
+        .map((r) => ({
+          date: r.timestamp.toISOString(),
+          lat: toDeg(r.positionLat),
+          lng: toDeg(r.positionLong),
+          speed: +((r.enhancedSpeed ?? r.speed ?? NaN) * 3.6).toFixed(1), // km/h
+        }));
     }
 
     function popup(p, label) {
-      return `<b>${label}</b> (${p.file})<br>${p.date}<br>lat ${p.lat}, lng ${p.lng}<br>speed ${p.speed}`;
+      return `<b>${label}</b> (${p.file})<br>${p.date}<br>lat ${p.lat}, lng ${p.lng}<br>speed ${p.speed} km/h`;
     }
 
     async function loadAll() {
       const files = await (await fetch('coordinate/files.json')).json();
-      const texts = await Promise.all(files.map(async (f) =>
-        (await fetch('coordinate/' + encodeURIComponent(f))).text()));
+      const buffers = await Promise.all(files.map(async (f) =>
+        (await fetch('coordinate/' + encodeURIComponent(f))).arrayBuffer()));
       // Merge every file into one array, sorted by time.
-      const points = texts.flatMap((t, i) => parseCsv(t).map((p) => ({ ...p, file: files[i] })))
+      const points = buffers.flatMap((b, i) => parseFit(b).map((p) => ({ ...p, file: files[i] })))
         .sort((a, b) => new Date(a.date) - new Date(b.date));
       console.log(points);
       document.getElementById('bar').textContent = `${files.length} files, ${points.length} points`;
