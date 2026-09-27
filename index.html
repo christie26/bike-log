@@ -41,9 +41,9 @@
     }
 
     async function loadAll() {
-      const files = await (await fetch('/api/files')).json();
+      const files = await (await fetch('coordinate/files.json')).json();
       const texts = await Promise.all(files.map(async (f) =>
-        (await fetch('/coordinate/' + encodeURIComponent(f))).text()));
+        (await fetch('coordinate/' + encodeURIComponent(f))).text()));
       // Merge every file into one array, sorted by time.
       const points = texts.flatMap((t, i) => parseCsv(t).map((p) => ({ ...p, file: files[i] })))
         .sort((a, b) => new Date(a.date) - new Date(b.date));
