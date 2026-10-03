@@ -1,0 +1,33 @@
+name: Update files.json
+run-name: ${{ github.actor }} is updating files.json
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'coordinate/**.fit'
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  update-files-json:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository code
+        uses: actions/checkout@v6
+      - name: Write FIT file names in coordinate to files.json
+        run: |
+          find coordinate -maxdepth 1 -type f -name '*.fit' -printf '%f\n' \
+            | sort \
+            | jq -R . | jq -s --indent 4 . > files.json
+          cat files.json
+      - name: Commit files.json if changed
+        run: |
+          if git diff --quiet -- files.json; then
+            echo "files.json is up to date"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
+          git add files.json
+          git commit -m "Update files.json"
+          git push
