@@ -302,7 +302,7 @@
 
     let allRides = [];
     async function loadAll() {
-      const files = await (await fetch('coordinate/files.json')).json();
+      const files = await (await fetch('files.json')).json();
       const buffers = await Promise.all(files.map(async (f) =>
         (await fetch('coordinate/' + encodeURIComponent(f))).arrayBuffer()));
       // Rides from all files, in time order.
