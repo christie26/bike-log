@@ -21,16 +21,22 @@
     #rides td { padding: 2px 6px; }
     #rides td:last-child { text-align: right; }
     #rides tfoot td { border-top: 1px solid #ccc; font-weight: bold; }
+    #day-pick { display: flex; gap: 4px; margin-bottom: 6px; }
+    #day-pick input, #day-pick button { font: inherit; }
+    #upload { position: absolute; top: 10px; right: 10px; z-index: 1000; background: #fff; padding: 4px 8px; border-radius: 4px;
+      font: 12px sans-serif; color: #555; box-shadow: 0 1px 4px rgba(0, 0, 0, .3); }
     #lang-box { position: absolute; bottom: 170px; left: 10px; z-index: 1000; background: #fff; padding: 6px 10px; border-radius: 4px;
       font: 14px sans-serif; box-shadow: 0 1px 4px rgba(0, 0, 0, .3); }
     /* Start and end labels: rounded box without the pointer; colors from LABEL_BG_COLOR and LABEL_TEXT_COLOR */
     .ride-label { font-weight: bold; color: var(--label-text); background: var(--label-bg); border-color: var(--label-bg); border-radius: 6px; }
     .ride-label::before { display: none; }
+    .route-hover { pointer-events: none; } /* so the route hover popup does not block the line under the cursor */
     .leaflet-tile-pane { filter: saturate(0.4) brightness(1.05); } /* muted base map only; route and markers keep their colors */
   </style>
 </head>
 <body>
   <div id="rides">
+    <div id="day-pick"><input type="date" id="day" /><button id="day-all">All</button></div>
     <div id="ride-list"></div>
   </div>
   <label id="lang-box">City name
@@ -43,6 +49,7 @@
     </select>
   </label>
   <div id="map"></div>
+  <div id="upload" hidden></div>
   <div id="elev"><svg></svg><div id="elev-tip"></div></div>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script type="module">
@@ -56,9 +63,8 @@
     const layer = L.layerGroup().addTo(map);
 
     const FIT_EPOCH_S = 631065600; // FIT times count from 1989-12-31T00:00:00Z
-    const MIN_MARKER_PX = 20; // minimum screen distance between route dots
+    const ROUTE_HIT_PX = 16; // width of the invisible hover area along the route line
     const RIDE_GAP_MS = 4 * 3600 * 1000; // a pause longer than this starts a new ride (e.g. overnight)
-    const POINT_COLOR = '#3f798e'; // dots along the route
     const LINE_COLOR = '#5a9baa'; // route line
     const START_COLOR = '#2a5674'; // outline of the start circle
     const END_COLOR = '#2a5674'; // outline of the end circle
@@ -115,9 +121,15 @@
     function localParts(iso, offsetMs) {
       const t = new Date(iso);
       const pad = (n) => String(n).padStart(2, '0');
-      if (offsetMs == null) return { dd: pad(t.getDate()), mm: pad(t.getMonth() + 1), HH: pad(t.getHours()), MM: pad(t.getMinutes()) };
+      if (offsetMs == null) return { yyyy: t.getFullYear(), dd: pad(t.getDate()), mm: pad(t.getMonth() + 1), HH: pad(t.getHours()), MM: pad(t.getMinutes()) };
       const d = new Date(t.getTime() + offsetMs);
-      return { dd: pad(d.getUTCDate()), mm: pad(d.getUTCMonth() + 1), HH: pad(d.getUTCHours()), MM: pad(d.getUTCMinutes()) };
+      return { yyyy: d.getUTCFullYear(), dd: pad(d.getUTCDate()), mm: pad(d.getUTCMonth() + 1), HH: pad(d.getUTCHours()), MM: pad(d.getUTCMinutes()) };
+    }
+
+    // "2026-09-27", the value format of <input type="date">
+    function isoDay(iso, offsetMs) {
+      const t = localParts(iso, offsetMs);
+      return `${t.yyyy}-${t.mm}-${t.dd}`;
     }
 
     // "27/09"
@@ -143,14 +155,14 @@
     };
     const nominatimLang = () => langSelect.value;
 
-    // {city, region} from OpenStreetMap Nominatim, cached per point and language; null on failure.
+    // {city, region} from OpenStreetMap Nominatim, cached per ~1 km cell (2 decimals) and language; null on failure.
     // Requests are spaced NOMINATIM_GAP_MS apart (Nominatim limit: 1 request per second).
     const NOMINATIM_GAP_MS = 1100;
     const placeCache = new Map();
     let nextFetchAt = 0;
     function address(p) {
       const lang = nominatimLang();
-      const key = `${lang},${p.lat.toFixed(3)},${p.lng.toFixed(3)}`;
+      const key = `${lang},${p.lat.toFixed(2)},${p.lng.toFixed(2)}`;
       if (!placeCache.has(key)) {
         const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=10&accept-language=${lang}&lat=${p.lat}&lon=${p.lng}`;
         const wait = Math.max(0, nextFetchAt - Date.now());
@@ -173,7 +185,8 @@
 
     function popup(p, label, place = '…') {
       return `<b>${label}</b> ${dayTime(p.date, p.offsetMs)}<br>${place}`
-        + `<br>(${p.lat.toFixed(3)}, ${p.lng.toFixed(3)})<br>speed ${p.speed} km/h`;
+        + `<br>(${p.lat.toFixed(3)}, ${p.lng.toFixed(3)})<br>speed ${p.speed} km/h`
+        + (p.alt != null ? `<br>elevation ${Math.round(p.alt)} m` : '');
     }
 
     // Bind a popup that opens on hover (tap on touch screens) and fills in the city name once it has loaded.
@@ -190,21 +203,6 @@
             placeName(p).then((place) => e.popup.setContent(popup(p, label, place)));
           }, 300);
         });
-    }
-
-    // Route dots, thinned so none sit closer than MIN_MARKER_PX on screen at the current zoom.
-    const pointLayer = L.layerGroup().addTo(layer);
-    function drawPoints(points) {
-      pointLayer.clearLayers();
-      const zoom = map.getZoom();
-      let last = null;
-      points.forEach((p, i) => {
-        const px = map.project([p.lat, p.lng], zoom);
-        if (last && px.distanceTo(last) < MIN_MARKER_PX) return;
-        last = px;
-        const dot = L.circleMarker([p.lat, p.lng], { radius: 3, color: POINT_COLOR, fillColor: '#ffffff', weight: 2, fillOpacity: 1 });
-        bindPlacePopup(dot, p, `# ${i}`).addTo(pointLayer);
-      });
     }
 
     // Start and end circles sit in their own SVG pane above the route dots, which are redrawn on every zoom.
@@ -304,6 +302,7 @@
     }
 
     function drawRidesBox(rides) {
+      if (!rides.length) { document.getElementById('ride-list').textContent = 'No ride on this day'; return; }
       const rows = rides.map((r) =>
         `<tr><td>${dayMonth(r.points[0].date, r.offsetMs)}</td><td>${r.km.toFixed(1)} km</td></tr>`).join('');
       const total = rides.reduce((sum, r) => sum + r.km, 0);
@@ -321,7 +320,7 @@
     });
     let elev = null; // {points [{p, km}], starts [{km, ride}], totalKm, x, y}
 
-    // Distance from the first ride's start to every point with an altitude.
+    // Distance from the first ride's start to every point, stored as p.km; the chart uses points with an altitude.
     function buildProfile(rides) {
       let km = 0;
       const points = [], starts = [];
@@ -329,6 +328,7 @@
         starts.push({ km, ride: r });
         r.points.forEach((p, i) => {
           if (i) km += L.latLng(r.points[i - 1]).distanceTo(p) / 1000;
+          p.km = km;
           if (p.alt != null) points.push({ p, km, ride: r });
         });
       });
@@ -400,6 +400,41 @@
       hoverMarker.setLatLng([e.p.lat, e.p.lng]).addTo(map);
     }
 
+    // Route hover: the nearest recorded point gets a marker and a popup; the city name loads
+    // only if the cursor rests on the point briefly, to keep Nominatim requests low.
+    const routePopup = L.popup({ autoPan: false, closeButton: false, className: 'route-hover', offset: [0, -END_RADIUS] });
+    let routePoints = [], routeHoverPoint = null, placeTimer = null;
+
+    function nearestPoint(latlng) {
+      const target = map.latLngToLayerPoint(latlng);
+      let best = null, bestD = Infinity;
+      routePoints.forEach((p) => {
+        const d = map.latLngToLayerPoint(p).distanceTo(target);
+        if (d < bestD) { best = p; bestD = d; }
+      });
+      return best;
+    }
+
+    function hoverRoute(ev) {
+      const p = nearestPoint(ev.latlng);
+      if (!p || p === routeHoverPoint) return;
+      routeHoverPoint = p;
+      const label = `${p.km.toFixed(1)} km`;
+      hoverMarker.setLatLng(p).addTo(map);
+      routePopup.setLatLng(p).setContent(popup(p, label)).openOn(map);
+      clearTimeout(placeTimer);
+      placeTimer = setTimeout(() => placeName(p).then((place) => {
+        if (routeHoverPoint === p) routePopup.setContent(popup(p, label, place));
+      }), 300);
+    }
+
+    function leaveRoute() {
+      routeHoverPoint = null;
+      clearTimeout(placeTimer);
+      hoverMarker.remove();
+      map.closePopup(routePopup);
+    }
+
     function leaveElevation() {
       elevTip.style.display = 'none';
       ['elev-cross', 'elev-dot'].forEach((id) => document.getElementById(id)?.setAttribute('visibility', 'hidden'));
@@ -410,24 +445,39 @@
     elevBox.addEventListener('pointerleave', leaveElevation);
     window.addEventListener('resize', drawElevation);
 
-    let allRides = [];
-    async function loadAll() {
-      const files = await (await fetch('files.json')).json();
-      const buffers = await Promise.all(files.map(async (f) =>
-        (await fetch('coordinate/' + encodeURIComponent(f))).arrayBuffer()));
-      // Rides from all files, in time order.
-      const rides = buffers.flatMap((b, i) => parseFit(b, files[i]))
-        .filter((r) => r.points.length)
-        .sort((a, b) => new Date(a.points[0].date) - new Date(b.points[0].date));
-      const points = rides.flatMap((r) => r.points);
-      console.log(rides);
+    // Last upload: time of the latest commit that changed a .fit file, from the GitHub API, in the viewer's timezone.
+    // Hidden if the API fails (e.g. rate limit: 60 requests per hour per IP).
+    const REPO = 'christie26/bike-log';
+    async function showLastUpload() {
+      try {
+        const [c] = await (await fetch(`https://api.github.com/repos/${REPO}/commits?path=coordinate&per_page=1`)).json();
+        const t = localParts(c.commit.committer.date);
+        const box = document.getElementById('upload');
+        box.textContent = `Last upload ${t.dd}/${t.mm}/${t.yyyy} ${t.HH}:${t.MM}`;
+        box.hidden = false;
+      } catch (e) { console.warn('last upload', e); }
+    }
+
+    // Draw the given rides: route line, start and end markers, elevation chart and rides box.
+    function showRides(rides) {
+      leaveRoute();
+      map.closePopup();
+      layer.clearLayers();
       drawRidesBox(rides);
+      const points = rides.flatMap((r) => r.points);
+      routePoints = points;
+      elev = points.length ? buildProfile(rides) : null;
+      if (elev && !elev.points.length) elev = null;
+      elevBox.hidden = !elev;
+      map.invalidateSize();
+      if (elev) drawElevation();
       if (!points.length) return;
-      allRides = rides;
-      queueCities(rides.map(cityJob));
 
       // Separate line per ride, so different days are not joined by a straight line.
-      const line = L.polyline(rides.map((r) => r.points.map((p) => [p.lat, p.lng])), { color: LINE_COLOR, weight: 4 }).addTo(layer);
+      const latlngs = rides.map((r) => r.points.map((p) => [p.lat, p.lng]));
+      const line = L.polyline(latlngs, { color: LINE_COLOR, weight: 4, interactive: false }).addTo(layer);
+      L.polyline(latlngs, { opacity: 0, weight: ROUTE_HIT_PX }).addTo(layer)
+        .on('mousemove', hoverRoute).on('mouseout', leaveRoute);
       map.fitBounds(line.getBounds(), { padding: [30, 30] });
 
       rides.forEach((r) => {
@@ -438,15 +488,33 @@
           marker.on('click', () => showSummary(r, marker.getLatLng()));
         });
       });
-
-      drawPoints(points);
-      map.on('zoomend', () => drawPoints(points));
-
-      elev = buildProfile(rides);
-      if (elev.points.length) drawElevation();
-      else { elev = null; elevBox.remove(); map.invalidateSize(); }
     }
 
+    // Date picker: show only the rides that start on the chosen day; "All" shows every ride.
+    const dayInput = document.getElementById('day');
+    const rideDay = (r) => isoDay(r.points[0].date, r.offsetMs);
+    dayInput.onchange = () => showRides(dayInput.value ? allRides.filter((r) => rideDay(r) === dayInput.value) : allRides);
+    document.getElementById('day-all').onclick = () => { dayInput.value = ''; showRides(allRides); };
+
+    let allRides = [];
+    async function loadAll() {
+      const files = await (await fetch('files.json')).json();
+      const buffers = await Promise.all(files.map(async (f) =>
+        (await fetch('coordinate/' + encodeURIComponent(f))).arrayBuffer()));
+      // Rides from all files, in time order.
+      allRides = buffers.flatMap((b, i) => parseFit(b, files[i]))
+        .filter((r) => r.points.length)
+        .sort((a, b) => new Date(a.points[0].date) - new Date(b.points[0].date));
+      console.log(allRides);
+      if (allRides.length) {
+        dayInput.min = rideDay(allRides[0]);
+        dayInput.max = rideDay(allRides[allRides.length - 1]);
+      }
+      showRides(allRides);
+      queueCities(allRides.map(cityJob));
+    }
+
+    showLastUpload();
     loadAll();
   </script>
 </body>
