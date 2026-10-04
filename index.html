@@ -4,6 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Etienne's bike adventure</title>
+  <link rel="icon" type="image/jpeg" href="bike.jpeg" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <style>
     html, body { height: 100%; margin: 0; }
@@ -69,9 +70,11 @@
     const START_COLOR = '#2a5674'; // outline of the start circle
     const END_COLOR = '#2a5674'; // outline of the end circle
     const END_RADIUS = 6; // start and end circles; route dots have radius 3
+    const STOP_RADIUS = 3; // small dot where a ride starts or ends in the middle of a day
     const LABEL_BG_COLOR = '#e9f2f3'; // background of the start and end labels; last 2 digits = opacity (b3 = 70%)
     const LABEL_TEXT_COLOR = '#2a5674'; // text of the start and end labels
     const ELEV_FILL_OPACITY = 0.2; // area under the elevation line, in LINE_COLOR
+    const ETIENNE_SIZE = 64; // photo at the end of the path, in px
     document.documentElement.style.setProperty('--label-bg', LABEL_BG_COLOR);
     document.documentElement.style.setProperty('--label-text', LABEL_TEXT_COLOR);
 
@@ -209,10 +212,18 @@
     map.createPane('ends').style.zIndex = 450;
     const endsRenderer = L.svg({ pane: 'ends' });
 
-    function labelMarker(p, text, color) {
+    function labelMarker(p, text, color, labelGap = END_RADIUS) {
       const marker = L.circleMarker([p.lat, p.lng], {
         renderer: endsRenderer, radius: END_RADIUS, color, weight: 3, fillColor: '#ffffff', fillOpacity: 1,
-      }).bindTooltip(text, { permanent: true, direction: 'top', offset: [0, -END_RADIUS], className: 'ride-label' });
+      }).bindTooltip(text, { permanent: true, direction: 'top', offset: [0, -labelGap], className: 'ride-label' });
+      return bindPlacePopup(marker, p, text);
+    }
+
+    // Small unlabeled dot for a ride's start or end inside a day.
+    function stopMarker(p, text, color) {
+      const marker = L.circleMarker([p.lat, p.lng], {
+        renderer: endsRenderer, radius: STOP_RADIUS, color, weight: 2, fillColor: '#ffffff', fillOpacity: 1,
+      });
       return bindPlacePopup(marker, p, text);
     }
 
@@ -303,8 +314,13 @@
 
     function drawRidesBox(rides) {
       if (!rides.length) { document.getElementById('ride-list').textContent = 'No ride on this day'; return; }
-      const rows = rides.map((r) =>
-        `<tr><td>${dayMonth(r.points[0].date, r.offsetMs)}</td><td>${r.km.toFixed(1)} km</td></tr>`).join('');
+      // One row per day: rides are in time order, so rides of the same day are adjacent.
+      const days = [];
+      rides.forEach((r, i) => {
+        if (!i || rideDay(rides[i - 1]) !== rideDay(r)) days.push({ label: dayMonth(r.points[0].date, r.offsetMs), km: 0 });
+        days[days.length - 1].km += r.km;
+      });
+      const rows = days.map((d) => `<tr><td>${d.label}</td><td>${d.km.toFixed(1)} km</td></tr>`).join('');
       const total = rides.reduce((sum, r) => sum + r.km, 0);
       document.getElementById('ride-list').innerHTML =
         `<table><tbody>${rows}</tbody><tfoot><tr><td>Total</td><td>${total.toFixed(1)} km</td></tr></tfoot></table>`;
@@ -480,14 +496,26 @@
         .on('mousemove', hoverRoute).on('mouseout', leaveRoute);
       map.fitBounds(line.getBounds(), { padding: [30, 30] });
 
-      rides.forEach((r) => {
+      // Labels only at the first start and the last end of each day; other ride starts and ends get a small dot.
+      rides.forEach((r, i) => {
         const first = r.points[0], last = r.points[r.points.length - 1];
+        const dayStart = !i || rideDay(rides[i - 1]) !== rideDay(r);
+        const dayEnd = i === rides.length - 1 || rideDay(rides[i + 1]) !== rideDay(r);
         // The hover popup's own click handler runs first and closes it; then the summary opens.
-        [[first, 'start', START_COLOR], [last, 'end', END_COLOR]].forEach(([p, text, color]) => {
-          const marker = labelMarker(p, `${dayMonth(p.date, r.offsetMs)} ${text}`, color).addTo(layer);
+        const pathEnd = i === rides.length - 1;
+        [[first, 'start', START_COLOR, dayStart], [last, 'end', END_COLOR, dayEnd]].forEach(([p, text, color, labeled]) => {
+          const label = `${dayMonth(p.date, r.offsetMs)} ${text}`;
+          const marker = (labeled ? labelMarker(p, label, color, pathEnd && text === 'end' ? ETIENNE_SIZE / 2 : END_RADIUS) : stopMarker(p, label, color)).addTo(layer);
           marker.on('click', () => showSummary(r, marker.getLatLng()));
         });
       });
+
+      // Etienne's photo on the last point; not interactive, so hover and click reach the end marker below.
+      const end = points[points.length - 1];
+      L.marker([end.lat, end.lng], {
+        interactive: false,
+        icon: L.icon({ iconUrl: 'etienne.webp', iconSize: [ETIENNE_SIZE, ETIENNE_SIZE] }),
+      }).addTo(layer);
     }
 
     // Date picker: show only the rides that start on the chosen day; "All" shows every ride.
