@@ -385,10 +385,12 @@
         const base = y(lo);
         svg += `<path d="${line}L${x(pts[pts.length - 1].km)},${base}L${x(pts[0].km)},${base}Z" fill="${LINE_COLOR}" fill-opacity="${ELEV_FILL_OPACITY}" />`
           + `<path d="${line}" fill="none" stroke="${LINE_COLOR}" stroke-width="2" stroke-linejoin="round" />`;
-        if (starts.length > 1) {
-          svg += `<line x1="${x(s.km)}" x2="${x(s.km)}" y1="${ELEV_PAD.top - 4}" y2="${y(lo)}" stroke="#bbb" stroke-dasharray="3 3" />`
-            + `<text x="${x(s.km) + 4}" y="${ELEV_PAD.top - 8}" fill="#666">${dayMonth(s.ride.points[0].date, s.ride.offsetMs)}</text>`;
-        }
+      });
+      // One date line per day, at the start of its first ride.
+      const dayStarts = starts.filter((s, i) => !i || rideDay(starts[i - 1].ride) !== rideDay(s.ride));
+      dayStarts.forEach((s) => {
+        svg += `<line x1="${x(s.km)}" x2="${x(s.km)}" y1="${ELEV_PAD.top - 4}" y2="${y(lo)}" stroke="#bbb" stroke-dasharray="3 3" />`
+          + `<text x="${x(s.km) + 4}" y="${ELEV_PAD.top - 8}" fill="#666">${dayMonth(s.ride.points[0].date, s.ride.offsetMs)}</text>`;
       });
       svg += `<line id="elev-cross" y1="${ELEV_PAD.top}" y2="${y(lo)}" stroke="#666" visibility="hidden" />`
         + `<circle id="elev-dot" r="4" fill="#ffffff" stroke="${START_COLOR}" stroke-width="2" visibility="hidden" />`;
