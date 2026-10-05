@@ -1,0 +1,10 @@
+[
+    { "name": "Namsan tower", "lat": 37.551798, "lng": 126.988161 },
+    { "name": "Busan terminal", "lat": 35.11743, "lng": 129.04874 },
+    { "name": "Fukuoka ferry", "lat": 33.6081980612843, "lng": 130.39946586051167 },
+    { "name": "Beppu beach", "lat": 33.28430791270834, "lng": 131.5053321432613 },
+    { "name": "Yawatahama ferry terminal", "lat": 33.45773389518295, "lng": 132.41781275714618 },
+    { "name": "Imabari castle", "lat": 34.06355597678772, "lng": 133.00734259471574 },
+    { "name": "Kurashiki", "lat": 34.5957520099519, "lng": 133.77174523993895 },
+    { "name": "Tokyo tower", "lat": 35.65845786488148, "lng": 139.74538293983485 }
+]
