@@ -4,28 +4,43 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Etienne's bike adventure</title>
+  <link rel="icon" type="image/jpeg" href="bike.jpeg" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <style>
-    html, body, #map { height: 100%; margin: 0; }
+    html, body { height: 100%; margin: 0; }
+    body { display: flex; flex-direction: column; }
+    #map { flex: 1; }
+    /* Elevation chart under the map; hovering it marks the matching point on the route */
+    #elev { position: relative; height: 140px; flex: none; background: #fff; box-shadow: 0 -1px 4px rgba(0, 0, 0, .2);
+      font: 12px sans-serif; touch-action: none; z-index: 1000; }
+    #elev svg { display: block; width: 100%; height: 100%; }
+    #elev-tip { position: absolute; top: 4px; display: none; pointer-events: none; white-space: nowrap; color: #222;
+      background: #fff; padding: 3px 8px; border-radius: 4px; box-shadow: 0 1px 4px rgba(0, 0, 0, .3); }
     #rides { position: absolute; top: 80px; left: 10px; z-index: 1000; background: #fff; padding: 8px 12px; border-radius: 4px;
       font: 14px sans-serif; box-shadow: 0 1px 4px rgba(0, 0, 0, .3); max-height: 70vh; overflow-y: auto; }
     #rides table { border-collapse: collapse; }
     #rides td { padding: 2px 6px; }
     #rides td:last-child { text-align: right; }
     #rides tfoot td { border-top: 1px solid #ccc; font-weight: bold; }
-    #lang-box { position: absolute; bottom: 20px; left: 10px; z-index: 1000; background: #fff; padding: 6px 10px; border-radius: 4px;
+    #day-pick { display: flex; gap: 4px; margin-bottom: 6px; }
+    #day-pick input, #day-pick button { font: inherit; }
+    #upload { position: absolute; top: 10px; right: 10px; z-index: 1000; background: #fff; padding: 4px 8px; border-radius: 4px;
+      font: 12px sans-serif; color: #555; box-shadow: 0 1px 4px rgba(0, 0, 0, .3); }
+    #lang-box { position: absolute; bottom: 170px; left: 10px; z-index: 1000; background: #fff; padding: 6px 10px; border-radius: 4px;
       font: 14px sans-serif; box-shadow: 0 1px 4px rgba(0, 0, 0, .3); }
     /* Start and end labels: rounded box without the pointer; colors from LABEL_BG_COLOR and LABEL_TEXT_COLOR */
     .ride-label { font-weight: bold; color: var(--label-text); background: var(--label-bg); border-color: var(--label-bg); border-radius: 6px; }
     .ride-label::before { display: none; }
+    .route-hover { pointer-events: none; } /* so the route hover popup does not block the line under the cursor */
     .leaflet-tile-pane { filter: saturate(0.4) brightness(1.05); } /* muted base map only; route and markers keep their colors */
   </style>
 </head>
 <body>
   <div id="rides">
+    <div id="day-pick"><input type="date" id="day" /><button id="day-all">All</button></div>
     <div id="ride-list"></div>
   </div>
-  <label id="lang-box">Language
+  <label id="lang-box">City name
     <select id="lang">
       <option value="ko">🇰🇷 한국어</option>
       <option value="es">🇲🇽 Español</option>
@@ -35,6 +50,8 @@
     </select>
   </label>
   <div id="map"></div>
+  <div id="upload" hidden></div>
+  <div id="elev"><svg></svg><div id="elev-tip"></div></div>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script type="module">
     import { Decoder, Stream } from 'https://cdn.jsdelivr.net/npm/@garmin/fitsdk@21.217.0/+esm';
@@ -47,21 +64,23 @@
     const layer = L.layerGroup().addTo(map);
 
     const FIT_EPOCH_S = 631065600; // FIT times count from 1989-12-31T00:00:00Z
-    const MIN_MARKER_PX = 20; // minimum screen distance between route dots
+    const ROUTE_HIT_PX = 16; // width of the invisible hover area along the route line
     const RIDE_GAP_MS = 4 * 3600 * 1000; // a pause longer than this starts a new ride (e.g. overnight)
-    const POINT_COLOR = '#3f798e'; // dots along the route
     const LINE_COLOR = '#5a9baa'; // route line
     const START_COLOR = '#2a5674'; // outline of the start circle
     const END_COLOR = '#2a5674'; // outline of the end circle
     const END_RADIUS = 6; // start and end circles; route dots have radius 3
+    const STOP_RADIUS = 3; // small dot where a ride starts or ends in the middle of a day
     const LABEL_BG_COLOR = '#e9f2f3'; // background of the start and end labels; last 2 digits = opacity (b3 = 70%)
     const LABEL_TEXT_COLOR = '#2a5674'; // text of the start and end labels
+    const ELEV_FILL_OPACITY = 0.2; // area under the elevation line, in LINE_COLOR
+    const ETIENNE_SIZE = 64; // photo at the end of the path, in px
     document.documentElement.style.setProperty('--label-bg', LABEL_BG_COLOR);
     document.documentElement.style.setProperty('--label-text', LABEL_TEXT_COLOR);
 
-    // Decode a .fit file into rides: [{file, points [{date, lat, lng, speed}], km, offsetMs}].
+    // Decode a .fit file into rides: [{file, points [{date, lat, lng, speed, alt}], km, offsetMs}].
     // A multi-day file is split into one ride per pause longer than RIDE_GAP_MS.
-    // FIT stores positions in semicircles and speed in m/s.
+    // FIT stores positions in semicircles, speed in m/s and altitude in m.
     function parseFit(buffer, file) {
       const { messages, errors } = new Decoder(Stream.fromArrayBuffer(buffer)).read();
       if (errors.length) console.warn(file, errors);
@@ -82,6 +101,7 @@
           lat: toDeg(r.positionLat),
           lng: toDeg(r.positionLong),
           speed: +((r.enhancedSpeed ?? r.speed ?? NaN) * 3.6).toFixed(1), // km/h
+          alt: r.enhancedAltitude ?? r.altitude ?? null, // m
         }))
         .sort((a, b) => new Date(a.date) - new Date(b.date));
 
@@ -104,9 +124,15 @@
     function localParts(iso, offsetMs) {
       const t = new Date(iso);
       const pad = (n) => String(n).padStart(2, '0');
-      if (offsetMs == null) return { dd: pad(t.getDate()), mm: pad(t.getMonth() + 1), HH: pad(t.getHours()), MM: pad(t.getMinutes()) };
+      if (offsetMs == null) return { yyyy: t.getFullYear(), dd: pad(t.getDate()), mm: pad(t.getMonth() + 1), HH: pad(t.getHours()), MM: pad(t.getMinutes()) };
       const d = new Date(t.getTime() + offsetMs);
-      return { dd: pad(d.getUTCDate()), mm: pad(d.getUTCMonth() + 1), HH: pad(d.getUTCHours()), MM: pad(d.getUTCMinutes()) };
+      return { yyyy: d.getUTCFullYear(), dd: pad(d.getUTCDate()), mm: pad(d.getUTCMonth() + 1), HH: pad(d.getUTCHours()), MM: pad(d.getUTCMinutes()) };
+    }
+
+    // "2026-09-27", the value format of <input type="date">
+    function isoDay(iso, offsetMs) {
+      const t = localParts(iso, offsetMs);
+      return `${t.yyyy}-${t.mm}-${t.dd}`;
     }
 
     // "27/09"
@@ -132,14 +158,14 @@
     };
     const nominatimLang = () => langSelect.value;
 
-    // {city, region} from OpenStreetMap Nominatim, cached per point and language; null on failure.
+    // {city, region} from OpenStreetMap Nominatim, cached per ~1 km cell (2 decimals) and language; null on failure.
     // Requests are spaced NOMINATIM_GAP_MS apart (Nominatim limit: 1 request per second).
     const NOMINATIM_GAP_MS = 1100;
     const placeCache = new Map();
     let nextFetchAt = 0;
     function address(p) {
       const lang = nominatimLang();
-      const key = `${lang},${p.lat.toFixed(3)},${p.lng.toFixed(3)}`;
+      const key = `${lang},${p.lat.toFixed(2)},${p.lng.toFixed(2)}`;
       if (!placeCache.has(key)) {
         const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=10&accept-language=${lang}&lat=${p.lat}&lon=${p.lng}`;
         const wait = Math.max(0, nextFetchAt - Date.now());
@@ -162,7 +188,8 @@
 
     function popup(p, label, place = '…') {
       return `<b>${label}</b> ${dayTime(p.date, p.offsetMs)}<br>${place}`
-        + `<br>(${p.lat.toFixed(3)}, ${p.lng.toFixed(3)})<br>speed ${p.speed} km/h`;
+        + `<br>(${p.lat.toFixed(3)}, ${p.lng.toFixed(3)})<br>speed ${p.speed} km/h`
+        + (p.alt != null ? `<br>elevation ${Math.round(p.alt)} m` : '');
     }
 
     // Bind a popup that opens on hover (tap on touch screens) and fills in the city name once it has loaded.
@@ -181,29 +208,22 @@
         });
     }
 
-    // Route dots, thinned so none sit closer than MIN_MARKER_PX on screen at the current zoom.
-    const pointLayer = L.layerGroup().addTo(layer);
-    function drawPoints(points) {
-      pointLayer.clearLayers();
-      const zoom = map.getZoom();
-      let last = null;
-      points.forEach((p, i) => {
-        const px = map.project([p.lat, p.lng], zoom);
-        if (last && px.distanceTo(last) < MIN_MARKER_PX) return;
-        last = px;
-        const dot = L.circleMarker([p.lat, p.lng], { radius: 3, color: POINT_COLOR, fillColor: '#ffffff', weight: 2, fillOpacity: 1 });
-        bindPlacePopup(dot, p, `# ${i}`).addTo(pointLayer);
-      });
-    }
-
     // Start and end circles sit in their own SVG pane above the route dots, which are redrawn on every zoom.
     map.createPane('ends').style.zIndex = 450;
     const endsRenderer = L.svg({ pane: 'ends' });
 
-    function labelMarker(p, text, color) {
+    function labelMarker(p, text, color, labelGap = END_RADIUS) {
       const marker = L.circleMarker([p.lat, p.lng], {
         renderer: endsRenderer, radius: END_RADIUS, color, weight: 3, fillColor: '#ffffff', fillOpacity: 1,
-      }).bindTooltip(text, { permanent: true, direction: 'top', offset: [0, -END_RADIUS], className: 'ride-label' });
+      }).bindTooltip(text, { permanent: true, direction: 'top', offset: [0, -labelGap], className: 'ride-label' });
+      return bindPlacePopup(marker, p, text);
+    }
+
+    // Small unlabeled dot for a ride's start or end inside a day.
+    function stopMarker(p, text, color) {
+      const marker = L.circleMarker([p.lat, p.lng], {
+        renderer: endsRenderer, radius: STOP_RADIUS, color, weight: 2, fillColor: '#ffffff', fillOpacity: 1,
+      });
       return bindPlacePopup(marker, p, text);
     }
 
@@ -293,12 +313,218 @@
     }
 
     function drawRidesBox(rides) {
-      const rows = rides.map((r) =>
-        `<tr><td>${dayMonth(r.points[0].date, r.offsetMs)}</td><td>${r.km.toFixed(1)} km</td></tr>`).join('');
+      if (!rides.length) { document.getElementById('ride-list').textContent = 'No ride on this day'; return; }
+      // One row per day: rides are in time order, so rides of the same day are adjacent.
+      const days = [];
+      rides.forEach((r, i) => {
+        if (!i || rideDay(rides[i - 1]) !== rideDay(r)) days.push({ label: dayMonth(r.points[0].date, r.offsetMs), km: 0 });
+        days[days.length - 1].km += r.km;
+      });
+      const rows = days.map((d) => `<tr><td>${d.label}</td><td>${d.km.toFixed(1)} km</td></tr>`).join('');
       const total = rides.reduce((sum, r) => sum + r.km, 0);
       document.getElementById('ride-list').innerHTML =
         `<table><tbody>${rows}</tbody><tfoot><tr><td>Total</td><td>${total.toFixed(1)} km</td></tr></tfoot></table>`;
     }
+
+    // Elevation chart: all rides end to end along the distance axis, one area per ride.
+    const ELEV_PAD = { top: 22, right: 16, bottom: 20, left: 48 };
+    const elevBox = document.getElementById('elev');
+    const elevSvg = elevBox.querySelector('svg');
+    const elevTip = document.getElementById('elev-tip');
+    const hoverMarker = L.circleMarker([0, 0], {
+      renderer: endsRenderer, radius: END_RADIUS, color: START_COLOR, weight: 3, fillColor: '#ffffff', fillOpacity: 1, interactive: false,
+    });
+    let elev = null; // {points [{p, km}], starts [{km, ride}], totalKm, x, y}
+
+    // Distance from the first ride's start to every point, stored as p.km; the chart uses points with an altitude.
+    function buildProfile(rides) {
+      let km = 0;
+      const points = [], starts = [];
+      rides.forEach((r) => {
+        starts.push({ km, ride: r });
+        r.points.forEach((p, i) => {
+          if (i) km += L.latLng(r.points[i - 1]).distanceTo(p) / 1000;
+          p.km = km;
+          if (p.alt != null) points.push({ p, km, ride: r });
+        });
+      });
+      return { points, starts, totalKm: km };
+    }
+
+    // Round axis step: 1, 2 or 5 times a power of ten, at least `raw`.
+    function niceStep(raw) {
+      const pow = 10 ** Math.floor(Math.log10(raw || 1));
+      return [1, 2, 5, 10].map((m) => m * pow).find((s) => s >= raw);
+    }
+
+    function drawElevation() {
+      if (!elev) return;
+      const { points, starts, totalKm } = elev;
+      const w = elevBox.clientWidth, h = elevBox.clientHeight;
+      const alts = points.map((e) => e.p.alt);
+      const yStep = niceStep((Math.max(...alts) - Math.min(...alts)) / 3);
+      const lo = Math.floor(Math.min(...alts) / yStep) * yStep;
+      const hi = Math.max(Math.ceil(Math.max(...alts) / yStep) * yStep, lo + yStep);
+      const x = elev.x = (km) => ELEV_PAD.left + km / (totalKm || 1) * (w - ELEV_PAD.left - ELEV_PAD.right);
+      const y = elev.y = (alt) => h - ELEV_PAD.bottom - (alt - lo) / (hi - lo) * (h - ELEV_PAD.top - ELEV_PAD.bottom);
+
+      let svg = '';
+      for (let a = lo; a <= hi; a += yStep) {
+        svg += `<line x1="${ELEV_PAD.left}" x2="${w - ELEV_PAD.right}" y1="${y(a)}" y2="${y(a)}" stroke="#e5e5e5" />`
+          + `<text x="${ELEV_PAD.left - 6}" y="${y(a) + 4}" text-anchor="end" fill="#666">${a} m</text>`;
+      }
+      const xStep = niceStep(totalKm / Math.max(1, Math.floor((w - ELEV_PAD.left - ELEV_PAD.right) / 80)));
+      for (let km = 0; km <= totalKm; km += xStep) {
+        svg += `<text x="${x(km)}" y="${h - 5}" text-anchor="middle" fill="#666">${+km.toFixed(2)} km</text>`;
+      }
+      // One area and line per ride, so a gap between days is not bridged.
+      starts.forEach((s) => {
+        const pts = points.filter((e) => e.ride === s.ride);
+        if (!pts.length) return;
+        const line = pts.map((e, i) => `${i ? 'L' : 'M'}${x(e.km).toFixed(1)},${y(e.p.alt).toFixed(1)}`).join('');
+        const base = y(lo);
+        svg += `<path d="${line}L${x(pts[pts.length - 1].km)},${base}L${x(pts[0].km)},${base}Z" fill="${LINE_COLOR}" fill-opacity="${ELEV_FILL_OPACITY}" />`
+          + `<path d="${line}" fill="none" stroke="${LINE_COLOR}" stroke-width="2" stroke-linejoin="round" />`;
+      });
+      // One date line per day, at the start of its first ride.
+      const dayStarts = starts.filter((s, i) => !i || rideDay(starts[i - 1].ride) !== rideDay(s.ride));
+      dayStarts.forEach((s) => {
+        svg += `<line x1="${x(s.km)}" x2="${x(s.km)}" y1="${ELEV_PAD.top - 4}" y2="${y(lo)}" stroke="#bbb" stroke-dasharray="3 3" />`
+          + `<text x="${x(s.km) + 4}" y="${ELEV_PAD.top - 8}" fill="#666">${dayMonth(s.ride.points[0].date, s.ride.offsetMs)}</text>`;
+      });
+      svg += `<line id="elev-cross" y1="${ELEV_PAD.top}" y2="${y(lo)}" stroke="#666" visibility="hidden" />`
+        + `<circle id="elev-dot" r="4" fill="#ffffff" stroke="${START_COLOR}" stroke-width="2" visibility="hidden" />`;
+      elevSvg.innerHTML = svg;
+    }
+
+    // Nearest profile point to the pointer: crosshair and tooltip on the chart, marker on the map.
+    function hoverElevation(ev) {
+      if (!elev) return;
+      const { points, totalKm } = elev;
+      const w = elevBox.clientWidth;
+      const px = ev.clientX - elevBox.getBoundingClientRect().left;
+      const km = (px - ELEV_PAD.left) / (w - ELEV_PAD.left - ELEV_PAD.right) * totalKm;
+      let a = 0, b = points.length - 1; // binary search on distance
+      while (b - a > 1) { const m = (a + b) >> 1; if (points[m].km < km) a = m; else b = m; }
+      const e = Math.abs(points[a].km - km) <= Math.abs(points[b].km - km) ? points[a] : points[b];
+      const cx = elev.x(e.km), cy = elev.y(e.p.alt);
+      const cross = document.getElementById('elev-cross'), dot = document.getElementById('elev-dot');
+      cross.setAttribute('x1', cx); cross.setAttribute('x2', cx); cross.setAttribute('visibility', 'visible');
+      dot.setAttribute('cx', cx); dot.setAttribute('cy', cy); dot.setAttribute('visibility', 'visible');
+      elevTip.innerHTML = `<b>${Math.round(e.p.alt)} m</b> · ${e.km.toFixed(1)} km · ${dayTime(e.p.date, e.p.offsetMs)}`;
+      elevTip.style.display = 'block';
+      const tipW = elevTip.offsetWidth; // keep the tooltip inside the chart, beside the crosshair
+      elevTip.style.left = `${cx + 10 + tipW > w ? cx - 10 - tipW : cx + 10}px`;
+      hoverMarker.setLatLng([e.p.lat, e.p.lng]).addTo(map);
+    }
+
+    // Route hover: the nearest recorded point gets a marker and a popup; the city name loads
+    // only if the cursor rests on the point briefly, to keep Nominatim requests low.
+    const routePopup = L.popup({ autoPan: false, closeButton: false, className: 'route-hover', offset: [0, -END_RADIUS] });
+    let routePoints = [], routeHoverPoint = null, placeTimer = null;
+
+    function nearestPoint(latlng) {
+      const target = map.latLngToLayerPoint(latlng);
+      let best = null, bestD = Infinity;
+      routePoints.forEach((p) => {
+        const d = map.latLngToLayerPoint(p).distanceTo(target);
+        if (d < bestD) { best = p; bestD = d; }
+      });
+      return best;
+    }
+
+    function hoverRoute(ev) {
+      const p = nearestPoint(ev.latlng);
+      if (!p || p === routeHoverPoint) return;
+      routeHoverPoint = p;
+      const label = `${p.km.toFixed(1)} km`;
+      hoverMarker.setLatLng(p).addTo(map);
+      routePopup.setLatLng(p).setContent(popup(p, label)).openOn(map);
+      clearTimeout(placeTimer);
+      placeTimer = setTimeout(() => placeName(p).then((place) => {
+        if (routeHoverPoint === p) routePopup.setContent(popup(p, label, place));
+      }), 300);
+    }
+
+    function leaveRoute() {
+      routeHoverPoint = null;
+      clearTimeout(placeTimer);
+      hoverMarker.remove();
+      map.closePopup(routePopup);
+    }
+
+    function leaveElevation() {
+      elevTip.style.display = 'none';
+      ['elev-cross', 'elev-dot'].forEach((id) => document.getElementById(id)?.setAttribute('visibility', 'hidden'));
+      hoverMarker.remove();
+    }
+
+    elevBox.addEventListener('pointermove', hoverElevation);
+    elevBox.addEventListener('pointerleave', leaveElevation);
+    window.addEventListener('resize', drawElevation);
+
+    // Last upload: time of the latest commit that changed a .fit file, from the GitHub API, in the viewer's timezone.
+    // Hidden if the API fails (e.g. rate limit: 60 requests per hour per IP).
+    const REPO = 'christie26/bike-log';
+    async function showLastUpload() {
+      try {
+        const [c] = await (await fetch(`https://api.github.com/repos/${REPO}/commits?path=coordinate&per_page=1`)).json();
+        const t = localParts(c.commit.committer.date);
+        const box = document.getElementById('upload');
+        box.textContent = `Last upload ${t.dd}/${t.mm}/${t.yyyy} ${t.HH}:${t.MM}`;
+        box.hidden = false;
+      } catch (e) { console.warn('last upload', e); }
+    }
+
+    // Draw the given rides: route line, start and end markers, elevation chart and rides box.
+    function showRides(rides) {
+      leaveRoute();
+      map.closePopup();
+      layer.clearLayers();
+      drawRidesBox(rides);
+      const points = rides.flatMap((r) => r.points);
+      routePoints = points;
+      elev = points.length ? buildProfile(rides) : null;
+      if (elev && !elev.points.length) elev = null;
+      elevBox.hidden = !elev;
+      map.invalidateSize();
+      if (elev) drawElevation();
+      if (!points.length) return;
+
+      // Separate line per ride, so different days are not joined by a straight line.
+      const latlngs = rides.map((r) => r.points.map((p) => [p.lat, p.lng]));
+      const line = L.polyline(latlngs, { color: LINE_COLOR, weight: 4, interactive: false }).addTo(layer);
+      L.polyline(latlngs, { opacity: 0, weight: ROUTE_HIT_PX }).addTo(layer)
+        .on('mousemove', hoverRoute).on('mouseout', leaveRoute);
+      map.fitBounds(line.getBounds(), { padding: [30, 30] });
+
+      // Labels only at the first start and the last end of each day; other ride starts and ends get a small dot.
+      rides.forEach((r, i) => {
+        const first = r.points[0], last = r.points[r.points.length - 1];
+        const dayStart = !i || rideDay(rides[i - 1]) !== rideDay(r);
+        const dayEnd = i === rides.length - 1 || rideDay(rides[i + 1]) !== rideDay(r);
+        // The hover popup's own click handler runs first and closes it; then the summary opens.
+        const pathEnd = i === rides.length - 1;
+        [[first, 'start', START_COLOR, dayStart], [last, 'end', END_COLOR, dayEnd]].forEach(([p, text, color, labeled]) => {
+          const label = `${dayMonth(p.date, r.offsetMs)} ${text}`;
+          const marker = (labeled ? labelMarker(p, label, color, pathEnd && text === 'end' ? ETIENNE_SIZE / 2 : END_RADIUS) : stopMarker(p, label, color)).addTo(layer);
+          marker.on('click', () => showSummary(r, marker.getLatLng()));
+        });
+      });
+
+      // Etienne's photo on the last point; not interactive, so hover and click reach the end marker below.
+      const end = points[points.length - 1];
+      L.marker([end.lat, end.lng], {
+        interactive: false,
+        icon: L.icon({ iconUrl: 'etienne.webp', iconSize: [ETIENNE_SIZE, ETIENNE_SIZE] }),
+      }).addTo(layer);
+    }
+
+    // Date picker: show only the rides that start on the chosen day; "All" shows every ride.
+    const dayInput = document.getElementById('day');
+    const rideDay = (r) => isoDay(r.points[0].date, r.offsetMs);
+    dayInput.onchange = () => showRides(dayInput.value ? allRides.filter((r) => rideDay(r) === dayInput.value) : allRides);
+    document.getElementById('day-all').onclick = () => { dayInput.value = ''; showRides(allRides); };
 
     let allRides = [];
     async function loadAll() {
@@ -306,33 +532,19 @@
       const buffers = await Promise.all(files.map(async (f) =>
         (await fetch('coordinate/' + encodeURIComponent(f))).arrayBuffer()));
       // Rides from all files, in time order.
-      const rides = buffers.flatMap((b, i) => parseFit(b, files[i]))
+      allRides = buffers.flatMap((b, i) => parseFit(b, files[i]))
         .filter((r) => r.points.length)
         .sort((a, b) => new Date(a.points[0].date) - new Date(b.points[0].date));
-      const points = rides.flatMap((r) => r.points);
-      console.log(rides);
-      drawRidesBox(rides);
-      if (!points.length) return;
-      allRides = rides;
-      queueCities(rides.map(cityJob));
-
-      // Separate line per ride, so different days are not joined by a straight line.
-      const line = L.polyline(rides.map((r) => r.points.map((p) => [p.lat, p.lng])), { color: LINE_COLOR, weight: 4 }).addTo(layer);
-      map.fitBounds(line.getBounds(), { padding: [30, 30] });
-
-      rides.forEach((r) => {
-        const first = r.points[0], last = r.points[r.points.length - 1];
-        // The hover popup's own click handler runs first and closes it; then the summary opens.
-        [[first, 'start', START_COLOR], [last, 'end', END_COLOR]].forEach(([p, text, color]) => {
-          const marker = labelMarker(p, `${dayMonth(p.date, r.offsetMs)} ${text}`, color).addTo(layer);
-          marker.on('click', () => showSummary(r, marker.getLatLng()));
-        });
-      });
-
-      drawPoints(points);
-      map.on('zoomend', () => drawPoints(points));
+      console.log(allRides);
+      if (allRides.length) {
+        dayInput.min = rideDay(allRides[0]);
+        dayInput.max = rideDay(allRides[allRides.length - 1]);
+      }
+      showRides(allRides);
+      queueCities(allRides.map(cityJob));
     }
 
+    showLastUpload();
     loadAll();
   </script>
 </body>
