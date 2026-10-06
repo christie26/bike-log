@@ -22,8 +22,11 @@
     #rides td { padding: 2px 6px; }
     #rides td:last-child { text-align: right; }
     #rides tfoot td { border-top: 1px solid #ccc; font-weight: bold; }
-    #day-pick { display: flex; gap: 4px; margin-bottom: 6px; }
-    #day-pick input, #day-pick button { font: inherit; }
+    /* Day rows and the total row are clickable: a day shows only its rides, the total shows them all */
+    #rides tbody tr, #rides tfoot tr { cursor: pointer; }
+    #rides tbody tr:hover, #rides tfoot tr:hover { background: #f0f4f5; }
+    #rides tr.selected { background: var(--label-bg); }
+    #rides .day-n { color: #777; }
     #upload { position: absolute; top: 10px; right: 10px; z-index: 1000; background: #fff; padding: 4px 8px; border-radius: 4px;
       font: 12px sans-serif; color: #555; box-shadow: 0 1px 4px rgba(0, 0, 0, .3); }
     #lang-box { position: absolute; bottom: 170px; left: 10px; z-index: 1000; background: #fff; padding: 6px 10px; border-radius: 4px;
@@ -31,16 +34,30 @@
     /* Start and end labels: rounded box without the pointer; colors from LABEL_BG_COLOR and LABEL_TEXT_COLOR */
     .ride-label { font-weight: bold; color: var(--label-text); background: var(--label-bg); border-color: var(--label-bg); border-radius: 6px; }
     .ride-label::before { display: none; }
+    .label-start { color: var(--start); }
+    .label-end { color: var(--end); }
+    /* Legend: what the map marks mean */
+    #legend { position: absolute; top: 44px; right: 10px; z-index: 1000; background: #fff; padding: 6px 10px; border-radius: 4px;
+      font: 12px sans-serif; color: #333; box-shadow: 0 1px 4px rgba(0, 0, 0, .3); line-height: 1.7; }
+    .swatch { display: inline-block; width: 8px; height: 8px; border: 2.5px solid; border-radius: 50%; background: #fff;
+      vertical-align: -2px; margin-right: 6px; }
+    .milestone-label { color: var(--milestone); }
+    .milestone-done { color: var(--milestone-done); font-weight: normal; }
+    #milestone-next { margin-top: 6px; }
+    /* Ring that grows and fades around the milestone Etienne is heading to */
+    .milestone-pulse { width: 100%; height: 100%; border-radius: 50%; background: var(--milestone);
+      animation: milestone-pulse 1.6s ease-out infinite; }
+    @keyframes milestone-pulse { from { transform: scale(1); opacity: .7; } to { transform: scale(3.5); opacity: 0; } }
     .route-hover { pointer-events: none; } /* so the route hover popup does not block the line under the cursor */
     .leaflet-tile-pane { filter: saturate(0.4) brightness(1.05); } /* muted base map only; route and markers keep their colors */
   </style>
 </head>
 <body>
   <div id="rides">
-    <div id="day-pick"><input type="date" id="day" /><button id="day-all">All</button></div>
     <div id="ride-list"></div>
+    <div id="milestone-next" hidden></div>
   </div>
-  <label id="lang-box">City name
+  <label id="lang-box"><span id="lang-text">Language</span>
     <select id="lang">
       <option value="ko">🇰🇷 한국어</option>
       <option value="es">🇲🇽 Español</option>
@@ -51,6 +68,7 @@
   </label>
   <div id="map"></div>
   <div id="upload" hidden></div>
+  <div id="legend"></div>
   <div id="elev"><svg></svg><div id="elev-tip"></div></div>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script type="module">
@@ -67,16 +85,25 @@
     const ROUTE_HIT_PX = 16; // width of the invisible hover area along the route line
     const RIDE_GAP_MS = 4 * 3600 * 1000; // a pause longer than this starts a new ride (e.g. overnight)
     const LINE_COLOR = '#5a9baa'; // route line
-    const START_COLOR = '#2a5674'; // outline of the start circle
-    const END_COLOR = '#2a5674'; // outline of the end circle
+    const START_COLOR = '#2e8b57'; // start circle, its label text and the start flag
+    const END_COLOR = '#2a5674'; // end circle and its label text
+    const HOVER_COLOR = '#2a5674'; // marker under the pointer, on the map and the chart
+    const OVERNIGHT_M = 500; // a day's end and the next day's start closer than this share one label
     const END_RADIUS = 6; // start and end circles; route dots have radius 3
     const STOP_RADIUS = 3; // small dot where a ride starts or ends in the middle of a day
     const LABEL_BG_COLOR = '#e9f2f3'; // background of the start and end labels; last 2 digits = opacity (b3 = 70%)
-    const LABEL_TEXT_COLOR = '#2a5674'; // text of the start and end labels
+    const LABEL_TEXT_COLOR = '#2a5674'; // text of the labels, unless colored by start or end
     const ELEV_FILL_OPACITY = 0.2; // area under the elevation line, in LINE_COLOR
     const ETIENNE_SIZE = 64; // photo at the end of the path, in px
+    const MILESTONE_COLOR = '#d9822b'; // milestones not reached yet; the next one is filled
+    const MILESTONE_DONE_COLOR = '#9aa5a8'; // milestones already reached
+    const FLAG_SIZE = 28; // flags on the trip's first point and the last milestone, in px
     document.documentElement.style.setProperty('--label-bg', LABEL_BG_COLOR);
     document.documentElement.style.setProperty('--label-text', LABEL_TEXT_COLOR);
+    document.documentElement.style.setProperty('--start', START_COLOR);
+    document.documentElement.style.setProperty('--end', END_COLOR);
+    document.documentElement.style.setProperty('--milestone', MILESTONE_COLOR);
+    document.documentElement.style.setProperty('--milestone-done', MILESTONE_DONE_COLOR);
 
     // Decode a .fit file into rides: [{file, points [{date, lat, lng, speed, alt}], km, offsetMs}].
     // A multi-day file is split into one ride per pause longer than RIDE_GAP_MS.
@@ -135,25 +162,77 @@
       return `${t.yyyy}-${t.mm}-${t.dd}`;
     }
 
-    // "27/09"
+    // Date in the ride's local time, in the format of the chosen language.
+    function formatDate(iso, offsetMs, opts) {
+      const local = offsetMs == null; // no recorded offset: the viewer's timezone
+      const d = new Date(new Date(iso).getTime() + (local ? 0 : offsetMs));
+      return new Intl.DateTimeFormat(LOCALES[langSelect.value], local ? opts : { ...opts, timeZone: 'UTC' }).format(d);
+    }
+
+    // "4 Oct", "10월 4일"
     function dayMonth(iso, offsetMs) {
-      const t = localParts(iso, offsetMs);
-      return `${t.dd}/${t.mm}`;
+      return formatDate(iso, offsetMs, { day: 'numeric', month: 'short' });
     }
 
-    // "27/09 14:05"
+    // "4 Oct, 14:05", "10월 4일 14:05"
     function dayTime(iso, offsetMs) {
-      const t = localParts(iso, offsetMs);
-      return `${t.dd}/${t.mm} ${t.HH}:${t.MM}`;
+      return formatDate(iso, offsetMs, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
     }
 
-    // Language of place names, passed to Nominatim as accept-language.
+    // Language of the page text, the dates and the place names (passed to Nominatim as accept-language).
+    const LOCALES = { ko: 'ko-KR', es: 'es-MX', fr: 'fr-FR', en: 'en-GB', ja: 'ja-JP' };
+    const TEXT = {
+      en: {
+        lang: 'Language', total: 'Total', noRide: 'No ride yet', dayN: (n) => `Day ${n}`, overnight: 'overnight', milestone: 'milestone', start: 'start', end: 'end',
+        ride: (day) => `${day} ride`, speed: 'speed', elevation: 'elevation', noAddress: 'address unavailable', unknownPlace: 'unknown place',
+        next: 'Next', toGo: (km) => `${km} to go`, reached: 'reached', allReached: 'All milestones reached', straight: 'straight',
+        lastUpload: 'Last upload',
+      },
+      ko: {
+        lang: '언어', total: '합계', noRide: '아직 라이딩이 없어요', dayN: (n) => `${n}일차`, overnight: '숙박', milestone: '마일스톤', start: '출발', end: '도착',
+        ride: (day) => `${day} 라이딩`, speed: '속도', elevation: '고도', noAddress: '주소를 불러오지 못함', unknownPlace: '알 수 없는 장소',
+        next: '다음', toGo: (km) => `${km} 남음`, reached: '도착', allReached: '모든 마일스톤 도착', straight: '직선',
+        lastUpload: '마지막 업로드',
+      },
+      es: {
+        lang: 'Idioma', total: 'Total', noRide: 'Aún no hay recorridos', dayN: (n) => `Día ${n}`, overnight: 'noche', milestone: 'hito', start: 'salida', end: 'llegada',
+        ride: (day) => `Recorrido del ${day}`, speed: 'velocidad', elevation: 'altitud', noAddress: 'dirección no disponible', unknownPlace: 'lugar desconocido',
+        next: 'Siguiente', toGo: (km) => `faltan ${km}`, reached: 'alcanzado', allReached: 'Todos los hitos alcanzados', straight: 'en línea recta',
+        lastUpload: 'Última subida',
+      },
+      fr: {
+        lang: 'Langue', total: 'Total', noRide: 'Pas encore de sortie', dayN: (n) => `Jour ${n}`, overnight: 'nuit', milestone: 'étape', start: 'départ', end: 'arrivée',
+        ride: (day) => `Sortie du ${day}`, speed: 'vitesse', elevation: 'altitude', noAddress: 'adresse indisponible', unknownPlace: 'lieu inconnu',
+        next: 'Prochaine étape', toGo: (km) => `encore ${km}`, reached: 'atteinte', allReached: 'Toutes les étapes atteintes', straight: 'à vol d’oiseau',
+        lastUpload: 'Dernier envoi',
+      },
+      ja: {
+        lang: '言語', total: '合計', noRide: 'まだ走行はありません', dayN: (n) => `${n}日目`, overnight: '宿泊', milestone: 'マイルストーン', start: '出発', end: '到着',
+        ride: (day) => `${day}の走行`, speed: '速度', elevation: '標高', noAddress: '住所を取得できません', unknownPlace: '不明な場所',
+        next: '次', toGo: (km) => `残り${km}`, reached: '到着済み', allReached: 'すべてのマイルストーンに到着', straight: '直線',
+        lastUpload: '最終アップロード',
+      },
+    };
     const langSelect = document.getElementById('lang');
+    const t = (key) => TEXT[langSelect.value][key];
     try { langSelect.value = localStorage.getItem('lang') || 'en'; } catch {}
     if (!langSelect.value) langSelect.value = 'en'; // stored value no longer offered
+
+    // Text that does not depend on the rides.
+    function applyLanguage() {
+      document.documentElement.lang = langSelect.value;
+      document.getElementById('lang-text').textContent = t('lang');
+    }
+    applyLanguage();
+
     langSelect.onchange = () => {
       try { localStorage.setItem('lang', langSelect.value); } catch {}
       map.closePopup();
+      applyLanguage();
+      drawMilestoneNext();
+      drawLastUpload();
+      drawLegend();
+      showRides(shownRides, false); // labels, rides box and chart in the new language
       queueCities(allRides.map(cityJob)); // city lists in the new language
     };
     const nominatimLang = () => langSelect.value;
@@ -183,13 +262,13 @@
 
     // "City, region" for a popup. Fetched only when a popup opens.
     function placeName(p) {
-      return address(p).then((a) => !a ? 'address unavailable' : [a.city, a.region].filter(Boolean).join(', ') || 'unknown place');
+      return address(p).then((a) => !a ? t('noAddress') : [a.city, a.region].filter(Boolean).join(', ') || t('unknownPlace'));
     }
 
     function popup(p, label, place = '…') {
       return `<b>${label}</b> ${dayTime(p.date, p.offsetMs)}<br>${place}`
-        + `<br>(${p.lat.toFixed(3)}, ${p.lng.toFixed(3)})<br>speed ${p.speed} km/h`
-        + (p.alt != null ? `<br>elevation ${Math.round(p.alt)} m` : '');
+        + `<br>(${p.lat.toFixed(3)}, ${p.lng.toFixed(3)})<br>${t('speed')} ${p.speed} km/h`
+        + (p.alt != null ? `<br>${t('elevation')} ${Math.round(p.alt)} m` : '');
     }
 
     // Bind a popup that opens on hover (tap on touch screens) and fills in the city name once it has loaded.
@@ -212,10 +291,12 @@
     map.createPane('ends').style.zIndex = 450;
     const endsRenderer = L.svg({ pane: 'ends' });
 
-    function labelMarker(p, text, color, labelGap = END_RADIUS) {
+    // tooltip: HTML of the permanent label; null for no label. text: title of the hover popup.
+    function labelMarker(p, text, color, tooltip, labelGap = END_RADIUS) {
       const marker = L.circleMarker([p.lat, p.lng], {
         renderer: endsRenderer, radius: END_RADIUS, color, weight: 3, fillColor: '#ffffff', fillOpacity: 1,
-      }).bindTooltip(text, { permanent: true, direction: 'top', offset: [0, -labelGap], className: 'ride-label' });
+      });
+      if (tooltip) marker.bindTooltip(tooltip, { permanent: true, direction: 'top', offset: [0, -labelGap], className: 'ride-label' });
       return bindPlacePopup(marker, p, text);
     }
 
@@ -250,7 +331,7 @@
       const first = ride.points[0], last = ride.points[ride.points.length - 1];
       const min = Math.round((new Date(last.date) - new Date(first.date)) / 60000);
       const route = cities.join(' → ') + (loading ? ' → …' : '');
-      return `<b>${dayMonth(first.date, ride.offsetMs)} ride</b><br>${route.replace(/^ → /, '')}`
+      return `<b>${t('ride')(dayMonth(first.date, ride.offsetMs))}</b><br>${route.replace(/^ → /, '')}`
         + `<br>${ride.km.toFixed(1)} km, ${Math.floor(min / 60)}h ${String(min % 60).padStart(2, '0')}m`
         + `<br>${dayTime(first.date, ride.offsetMs)} → ${dayTime(last.date, ride.offsetMs)}`;
     }
@@ -312,18 +393,25 @@
       queueCities([summaryJob], true);
     }
 
-    function drawRidesBox(rides) {
-      if (!rides.length) { document.getElementById('ride-list').textContent = 'No ride on this day'; return; }
+    // Always lists every day of the trip; the picked day is highlighted.
+    function drawRidesBox() {
+      const list = document.getElementById('ride-list');
+      if (!allRides.length) { list.textContent = t('noRide'); return; }
       // One row per day: rides are in time order, so rides of the same day are adjacent.
       const days = [];
-      rides.forEach((r, i) => {
-        if (!i || rideDay(rides[i - 1]) !== rideDay(r)) days.push({ label: dayMonth(r.points[0].date, r.offsetMs), km: 0 });
+      allRides.forEach((r, i) => {
+        if (!i || rideDay(allRides[i - 1]) !== rideDay(r)) {
+          days.push({ day: rideDay(r), n: tripDay(r), label: dayMonth(r.points[0].date, r.offsetMs), km: 0 });
+        }
         days[days.length - 1].km += r.km;
       });
-      const rows = days.map((d) => `<tr><td>${d.label}</td><td>${d.km.toFixed(1)} km</td></tr>`).join('');
-      const total = rides.reduce((sum, r) => sum + r.km, 0);
-      document.getElementById('ride-list').innerHTML =
-        `<table><tbody>${rows}</tbody><tfoot><tr><td>Total</td><td>${total.toFixed(1)} km</td></tr></tfoot></table>`;
+      const rows = days.map((d) => `<tr data-day="${d.day}"${d.day === pickedDay ? ' class="selected"' : ''}>`
+        + `<td><span class="day-n">${t('dayN')(d.n)}</span> · ${d.label}</td><td>${d.km.toFixed(1)} km</td></tr>`).join('');
+      const total = allRides.reduce((sum, r) => sum + r.km, 0);
+      list.innerHTML = `<table><tbody>${rows}</tbody>`
+        + `<tfoot><tr><td>${t('total')}</td><td>${total.toFixed(1)} km</td></tr></tfoot></table>`;
+      list.querySelectorAll('tbody tr').forEach((tr) => tr.onclick = () => pickDay(tr.dataset.day === pickedDay ? '' : tr.dataset.day));
+      list.querySelector('tfoot tr').onclick = () => pickDay('');
     }
 
     // Elevation chart: all rides end to end along the distance axis, one area per ride.
@@ -332,7 +420,7 @@
     const elevSvg = elevBox.querySelector('svg');
     const elevTip = document.getElementById('elev-tip');
     const hoverMarker = L.circleMarker([0, 0], {
-      renderer: endsRenderer, radius: END_RADIUS, color: START_COLOR, weight: 3, fillColor: '#ffffff', fillOpacity: 1, interactive: false,
+      renderer: endsRenderer, radius: END_RADIUS, color: HOVER_COLOR, weight: 3, fillColor: '#ffffff', fillOpacity: 1, interactive: false,
     });
     let elev = null; // {points [{p, km}], starts [{km, ride}], totalKm, x, y}
 
@@ -393,7 +481,7 @@
           + `<text x="${x(s.km) + 4}" y="${ELEV_PAD.top - 8}" fill="#666">${dayMonth(s.ride.points[0].date, s.ride.offsetMs)}</text>`;
       });
       svg += `<line id="elev-cross" y1="${ELEV_PAD.top}" y2="${y(lo)}" stroke="#666" visibility="hidden" />`
-        + `<circle id="elev-dot" r="4" fill="#ffffff" stroke="${START_COLOR}" stroke-width="2" visibility="hidden" />`;
+        + `<circle id="elev-dot" r="4" fill="#ffffff" stroke="${HOVER_COLOR}" stroke-width="2" visibility="hidden" />`;
       elevSvg.innerHTML = svg;
     }
 
@@ -463,25 +551,138 @@
     elevBox.addEventListener('pointerleave', leaveElevation);
     window.addEventListener('resize', drawElevation);
 
+    // Milestones from milestones.json, in travel order: [{name, lat, lng}].
+    // A milestone counts as reached once the route passes within MILESTONE_REACH_M of it;
+    // reaching one also marks the ones before it as reached.
+    const MILESTONE_REACH_M = 1000;
+    const BIKE_ROUTE_URL = 'https://routing.openstreetmap.de/routed-bike/route/v1/driving'; // OSRM with a bike profile
+    let milestones = []; // each also gets reached, and toGoKm: distance from Etienne's last point, through the milestones before it
+
+    function setMilestones(list, rides) {
+      const points = rides.flatMap((r) => r.points);
+      let lastReached = -1;
+      list.forEach((m, i) => {
+        if (points.some((p) => L.latLng(p).distanceTo(m) <= MILESTONE_REACH_M)) lastReached = i;
+      });
+      milestones = list.map((m, i) => ({ ...m, reached: i <= lastReached, toGoKm: null, straight: false }));
+    }
+
+    // Bike road distance from the last point to every milestone ahead, in one request.
+    // Falls back to straight lines if the routing server fails.
+    async function routeMilestones(rides) {
+      const ahead = milestones.filter((m) => !m.reached);
+      const here = rides.length && rides[rides.length - 1].points.slice(-1)[0];
+      if (!here || !ahead.length) return;
+      const stops = [here, ...ahead];
+      try {
+        const coords = stops.map((p) => `${p.lng.toFixed(5)},${p.lat.toFixed(5)}`).join(';');
+        const j = await (await fetch(`${BIKE_ROUTE_URL}/${coords}?overview=false`)).json();
+        if (j.code !== 'Ok') throw new Error(j.message || j.code);
+        let km = 0;
+        j.routes[0].legs.forEach((leg, i) => { km += leg.distance / 1000; ahead[i].toGoKm = km; });
+      } catch (e) {
+        console.warn('bike route', e);
+        let km = 0;
+        ahead.forEach((m, i) => { km += L.latLng(stops[i]).distanceTo(m) / 1000; m.toGoKm = km; m.straight = true; });
+      }
+      drawMilestoneNext();
+    }
+
+    // "123 km", "~98 km (straight)" when the road distance is unavailable, "… km" while loading.
+    function toGoText(m) {
+      if (m.toGoKm == null) return '… km';
+      return m.straight ? `~${Math.round(m.toGoKm)} km (${t('straight')})` : `${Math.round(m.toGoKm)} km`;
+    }
+
+    // Line under the rides table; always about the whole trip, whatever day is picked.
+    function drawMilestoneNext() {
+      const box = document.getElementById('milestone-next');
+      const next = milestones.find((m) => !m.reached);
+      box.hidden = !milestones.length;
+      box.innerHTML = next ? `${t('next')}: <b>${next.name}</b> · ${toGoText(next)}` : t('allReached');
+    }
+
+    // Flag whose pole stands on p: solid START_COLOR for the start, checkered for the finish.
+    // Not interactive, so hover and click reach the dot below. Own pane above the labels, which would hide it near a milestone.
+    map.createPane('flags').style.zIndex = 660; // tooltipPane is 650
+    function flagMarker(p, checkered) {
+      const cloth = checkered
+        ? [0, 1, 2].flatMap((c) => [0, 1].map((r) =>
+          `<rect x="${3 + 6 * c}" y="${2 + 6 * r}" width="6" height="6" fill="${(c + r) % 2 ? '#fff' : '#222'}"/>`)).join('')
+          + '<rect x="3" y="2" width="18" height="12" fill="none" stroke="#222"/>'
+        : `<rect x="3" y="2" width="18" height="12" fill="${START_COLOR}"/>`;
+      const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${FLAG_SIZE}" height="${FLAG_SIZE}" viewBox="0 0 28 28">`
+        + `<line x1="2" y1="1" x2="2" y2="28" stroke="#222" stroke-width="2"/>${cloth}</svg>`;
+      return L.marker([p.lat, p.lng], {
+        pane: 'flags', interactive: false,
+        icon: L.divIcon({ className: '', html: svg, iconSize: [FLAG_SIZE, FLAG_SIZE], iconAnchor: [2, FLAG_SIZE] }),
+      });
+    }
+
+    function milestoneMarker(m) {
+      const next = m === milestones.find((x) => !x.reached);
+      const finish = m === milestones[milestones.length - 1];
+      const color = m.reached ? MILESTONE_DONE_COLOR : MILESTONE_COLOR;
+      const marker = L.circleMarker([m.lat, m.lng], {
+        renderer: endsRenderer, radius: END_RADIUS, color, weight: 3, fillColor: next ? color : '#ffffff', fillOpacity: 1,
+      }).bindTooltip(m.name, {
+        permanent: true, direction: 'top', offset: [0, -(finish ? FLAG_SIZE : END_RADIUS)], className: `ride-label milestone-label${m.reached ? ' milestone-done' : ''}`,
+      });
+      return marker.bindPopup(() => `<b>${m.name}</b><br>${m.reached ? t('reached') : t('toGo')(toGoText(m))}`, { autoPan: false })
+        .on('mouseover', () => marker.openPopup())
+        .on('mouseout', () => marker.closePopup());
+    }
+
+    // Milestone dots; the one Etienne is heading to pulses and gets a dashed line from his last point.
+    // Flags mark the trip's first point and the last milestone, whatever day is picked.
+    map.createPane('pulse').style.zIndex = 440; // under the milestone dots in the 'ends' pane
+    function drawMilestones() {
+      milestones.forEach((m) => milestoneMarker(m).addTo(layer));
+      if (milestones.length) flagMarker(milestones[milestones.length - 1], true).addTo(layer);
+      if (allRides.length) flagMarker(allRides[0].points[0], false).addTo(layer);
+      const next = milestones.find((m) => !m.reached);
+      if (!next) return;
+      const size = 2 * END_RADIUS + 3; // dot with its outline
+      L.marker([next.lat, next.lng], {
+        pane: 'pulse', interactive: false,
+        icon: L.divIcon({ className: '', html: '<div class="milestone-pulse"></div>', iconSize: [size, size] }),
+      }).addTo(layer);
+      const here = allRides.length && allRides[allRides.length - 1].points.slice(-1)[0];
+      if (here) L.polyline([[here.lat, here.lng], [next.lat, next.lng]], {
+        color: MILESTONE_COLOR, weight: 3, dashArray: '6 8', interactive: false,
+      }).addTo(layer);
+    }
+
     // Last upload: time of the latest commit that changed a .fit file, from the GitHub API, in the viewer's timezone.
     // Hidden if the API fails (e.g. rate limit: 60 requests per hour per IP).
     const REPO = 'christie26/bike-log';
+    let lastUploadDate = null;
     async function showLastUpload() {
       try {
         const [c] = await (await fetch(`https://api.github.com/repos/${REPO}/commits?path=coordinate&per_page=1`)).json();
-        const t = localParts(c.commit.committer.date);
-        const box = document.getElementById('upload');
-        box.textContent = `Last upload ${t.dd}/${t.mm}/${t.yyyy} ${t.HH}:${t.MM}`;
-        box.hidden = false;
+        lastUploadDate = c.commit.committer.date;
+        drawLastUpload();
       } catch (e) { console.warn('last upload', e); }
     }
 
+    function drawLastUpload() {
+      if (!lastUploadDate) return;
+      const box = document.getElementById('upload');
+      box.textContent = `${t('lastUpload')} ${formatDate(lastUploadDate, null,
+        { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })}`;
+      box.hidden = false;
+    }
+
     // Draw the given rides: route line, start and end markers, elevation chart and rides box.
-    function showRides(rides) {
+    // fit: zoom the map to the rides; off when only the language changes.
+    let shownRides = [];
+    function showRides(rides, fit = true) {
+      shownRides = rides;
       leaveRoute();
       map.closePopup();
       layer.clearLayers();
-      drawRidesBox(rides);
+      drawRidesBox();
+      drawMilestones();
       const points = rides.flatMap((r) => r.points);
       routePoints = points;
       elev = points.length ? buildProfile(rides) : null;
@@ -496,18 +697,29 @@
       const line = L.polyline(latlngs, { color: LINE_COLOR, weight: 4, interactive: false }).addTo(layer);
       L.polyline(latlngs, { opacity: 0, weight: ROUTE_HIT_PX }).addTo(layer)
         .on('mousemove', hoverRoute).on('mouseout', leaveRoute);
-      map.fitBounds(line.getBounds(), { padding: [30, 30] });
+      if (fit) map.fitBounds(line.getBounds(), { padding: [30, 30] });
 
-      // Labels only at the first start and the last end of each day; other ride starts and ends get a small dot.
+      // Labels only at the first start and the last end of each day, with the date colored by start or end;
+      // other ride starts and ends get a small dot. A day's end and the next day's start closer than
+      // OVERNIGHT_M share one label on the end: "4 Oct → 5 Oct".
+      const dateSpan = (p, r, kind) => `<span class="label-${kind}">${dayMonth(p.date, r.offsetMs)}</span>`;
       rides.forEach((r, i) => {
         const first = r.points[0], last = r.points[r.points.length - 1];
-        const dayStart = !i || rideDay(rides[i - 1]) !== rideDay(r);
-        const dayEnd = i === rides.length - 1 || rideDay(rides[i + 1]) !== rideDay(r);
-        // The hover popup's own click handler runs first and closes it; then the summary opens.
-        const pathEnd = i === rides.length - 1;
+        const prev = rides[i - 1], next = rides[i + 1];
+        const dayStart = !prev || rideDay(prev) !== rideDay(r);
+        const dayEnd = !next || rideDay(next) !== rideDay(r);
+        const overnightBefore = dayStart && prev && L.latLng(prev.points[prev.points.length - 1]).distanceTo(first) <= OVERNIGHT_M;
+        const overnightAfter = dayEnd && next && L.latLng(last).distanceTo(next.points[0]) <= OVERNIGHT_M;
+        const pathEnd = !next;
         [[first, 'start', START_COLOR, dayStart], [last, 'end', END_COLOR, dayEnd]].forEach(([p, text, color, labeled]) => {
-          const label = `${dayMonth(p.date, r.offsetMs)} ${text}`;
-          const marker = (labeled ? labelMarker(p, label, color, pathEnd && text === 'end' ? ETIENNE_SIZE / 2 : END_RADIUS) : stopMarker(p, label, color)).addTo(layer);
+          const label = `${dayMonth(p.date, r.offsetMs)} ${t(text)}`;
+          let tooltip = dateSpan(p, r, text);
+          if (text === 'start' && overnightBefore) tooltip = null; // label is on the previous day's end
+          if (text === 'end' && overnightAfter) tooltip += ` → ${dateSpan(next.points[0], next, 'start')}`;
+          const tripStart = p === allRides[0].points[0];
+          const gap = pathEnd && text === 'end' ? ETIENNE_SIZE / 2 : tripStart ? FLAG_SIZE : END_RADIUS;
+          const marker = (labeled ? labelMarker(p, label, color, tooltip, gap) : stopMarker(p, label, color)).addTo(layer);
+          // The hover popup's own click handler runs first and closes it; then the summary opens.
           marker.on('click', () => showSummary(r, marker.getLatLng()));
         });
       });
@@ -520,14 +732,32 @@
       }).addTo(layer);
     }
 
-    // Date picker: show only the rides that start on the chosen day; "All" shows every ride.
-    const dayInput = document.getElementById('day');
+    // Day picked in the rides box: show only the rides that start on it; '' shows every ride.
+    let pickedDay = '';
     const rideDay = (r) => isoDay(r.points[0].date, r.offsetMs);
-    dayInput.onchange = () => showRides(dayInput.value ? allRides.filter((r) => rideDay(r) === dayInput.value) : allRides);
-    document.getElementById('day-all').onclick = () => { dayInput.value = ''; showRides(allRides); };
+    // Day of the trip, counted from the first ride's day; rest days count too. "2026-10-04" parses as UTC midnight.
+    const tripDay = (r) => Math.round((new Date(rideDay(r)) - new Date(rideDay(allRides[0]))) / 86400000) + 1;
+    function pickDay(day) {
+      pickedDay = day;
+      showRides(day ? allRides.filter((r) => rideDay(r) === day) : allRides);
+    }
+
+    // Legend in the top right corner, in the chosen language.
+    function drawLegend() {
+      const swatch = (color) => `<span class="swatch" style="border-color:${color}"></span>`;
+      document.getElementById('legend').innerHTML = [
+        `${swatch(START_COLOR)}${t('start')}`,
+        `${swatch(END_COLOR)}${t('end')}`,
+        `<b><span class="label-end">A</span> → <span class="label-start">B</span></b> ${t('overnight')}`,
+        `${swatch(MILESTONE_COLOR)}${t('milestone')}`,
+      ].join('<br>');
+    }
+    drawLegend();
 
     let allRides = [];
     async function loadAll() {
+      const milestoneList = fetch('milestones.json').then((r) => r.json())
+        .catch((e) => { console.warn('milestones', e); return []; });
       const files = await (await fetch('files.json')).json();
       const buffers = await Promise.all(files.map(async (f) =>
         (await fetch('coordinate/' + encodeURIComponent(f))).arrayBuffer()));
@@ -536,12 +766,11 @@
         .filter((r) => r.points.length)
         .sort((a, b) => new Date(a.points[0].date) - new Date(b.points[0].date));
       console.log(allRides);
-      if (allRides.length) {
-        dayInput.min = rideDay(allRides[0]);
-        dayInput.max = rideDay(allRides[allRides.length - 1]);
-      }
+      setMilestones(await milestoneList, allRides);
+      drawMilestoneNext();
       showRides(allRides);
       queueCities(allRides.map(cityJob));
+      routeMilestones(allRides);
     }
 
     showLastUpload();
