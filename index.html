@@ -74,6 +74,18 @@
     #gb-form { display: flex; flex-direction: column; gap: 4px; }
     #gb-form input, #gb-form textarea, #gb-form button { font: inherit; }
     #gb-form textarea { resize: vertical; min-height: 3em; }
+    /* Phones: lower elevation chart (boxes above it follow) and denser guestbook messages */
+    @media (max-width: 600px) {
+      #elev { height: 100px; }
+      #lang-box, #gb-open { bottom: 130px; }
+      #gb { bottom: 170px; gap: 4px; padding: 6px 10px; }
+      .gb-msg { padding: 2px 0; font-size: 13px; line-height: 1.3; }
+      .gb-meta { font-size: 11px; }
+      /* Pinch zooms on phones, so the +/- buttons go and the rides box takes their place */
+      .leaflet-control-zoom { display: none; }
+      #rides { top: 10px; font-size: 12px; padding: 4px 8px; }
+      #rides td { padding: 1px 4px; }
+    }
     .route-hover { pointer-events: none; } /* so the route hover popup does not block the line under the cursor */
     .leaflet-tile-pane { filter: saturate(0.4) brightness(1.05); } /* muted base map only; route and markers keep their colors */
   </style>
@@ -831,11 +843,16 @@
       gbName.value = readNameCookie();
       const gbOpen = document.getElementById('gb-open');
       gbOpen.classList.add('gb-closed');
-      gbOpen.onclick = () => {
-        gbBox.hidden = !gbBox.hidden;
-        gbOpen.classList.toggle('gb-closed', gbBox.hidden);
-        if (!gbBox.hidden) (gbName.value ? gbText : gbName).focus();
+      const showGuestbook = (open) => {
+        gbBox.hidden = !open;
+        gbOpen.classList.toggle('gb-closed', !open);
+        if (open) (gbName.value ? gbText : gbName).focus();
       };
+      gbOpen.onclick = () => showGuestbook(gbBox.hidden);
+      // A press anywhere outside the panel and its button closes the panel. Capture phase: the map cannot swallow it.
+      document.addEventListener('pointerdown', (e) => {
+        if (!gbBox.hidden && !gbBox.contains(e.target) && !gbOpen.contains(e.target)) showGuestbook(false);
+      }, true);
       document.getElementById('gb-form').onsubmit = async (e) => {
         e.preventDefault();
         const name = gbName.value.trim(), text = gbText.value.trim();
