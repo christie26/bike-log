@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <script>
     // The GitHub Pages address was shared before the guestbook; send its visitors to the Railway server, which has the API.
-    const RAILWAY_URL = 'https://bike-log-production.up.railway.app/'; // e.g. 'https://bike-log.up.railway.app'; empty: no redirect
+    const RAILWAY_URL = 'https://bike-log-production.up.railway.app'; // e.g. 'https://bike-log.up.railway.app'; empty: no redirect
     if (RAILWAY_URL && location.hostname.endsWith('github.io')) location.replace(RAILWAY_URL + '/' + location.search + location.hash);
   </script>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
