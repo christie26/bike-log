@@ -48,6 +48,19 @@
     .milestone-pulse { width: 100%; height: 100%; border-radius: 50%; background: var(--milestone);
       animation: milestone-pulse 1.6s ease-out infinite; }
     @keyframes milestone-pulse { from { transform: scale(1); opacity: .7; } to { transform: scale(3.5); opacity: 0; } }
+    /* Guestbook: button above the elevation chart opens the message panel */
+    #gb-open { position: absolute; bottom: 170px; right: 10px; z-index: 1000; font: 14px sans-serif; background: #fff; border: 0;
+      padding: 6px 10px; border-radius: 4px; box-shadow: 0 1px 4px rgba(0, 0, 0, .3); cursor: pointer; }
+    #gb { position: absolute; bottom: 210px; right: 10px; z-index: 1000; width: min(320px, calc(100vw - 20px)); max-height: 60vh;
+      display: flex; flex-direction: column; gap: 6px; background: #fff; padding: 8px 12px; border-radius: 4px;
+      font: 14px sans-serif; box-shadow: 0 1px 4px rgba(0, 0, 0, .3); }
+    #gb[hidden] { display: none; }
+    #gb-list { flex: 1; overflow-y: auto; }
+    .gb-msg { padding: 4px 0; border-bottom: 1px solid #eee; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .gb-meta { font-size: 12px; color: #777; }
+    #gb-form { display: flex; flex-direction: column; gap: 4px; }
+    #gb-form input, #gb-form textarea, #gb-form button { font: inherit; }
+    #gb-form textarea { resize: vertical; min-height: 3em; }
     .route-hover { pointer-events: none; } /* so the route hover popup does not block the line under the cursor */
     .leaflet-tile-pane { filter: saturate(0.4) brightness(1.05); } /* muted base map only; route and markers keep their colors */
   </style>
@@ -69,6 +82,15 @@
   <div id="map"></div>
   <div id="upload" hidden></div>
   <div id="legend"></div>
+  <button id="gb-open" hidden></button>
+  <div id="gb" hidden>
+    <div id="gb-list"></div>
+    <form id="gb-form">
+      <input id="gb-name" maxlength="40" required />
+      <textarea id="gb-text" maxlength="500" required></textarea>
+      <button id="gb-send"></button>
+    </form>
+  </div>
   <div id="elev"><svg></svg><div id="elev-tip"></div></div>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script type="module">
@@ -187,30 +209,35 @@
         ride: (day) => `${day} ride`, speed: 'speed', elevation: 'elevation', noAddress: 'address unavailable', unknownPlace: 'unknown place',
         next: 'Next', toGo: (km) => `${km} to go`, reached: 'reached', allReached: 'All milestones reached', straight: 'straight',
         lastUpload: 'Last upload',
+        guestbook: 'Messages', yourName: 'Your name', yourMessage: 'Leave a message for Etienne', send: 'Send', noMessage: 'No message yet', sendFailed: 'Could not send. Try again.',
       },
       ko: {
         lang: '언어', total: '합계', noRide: '아직 라이딩이 없어요', dayN: (n) => `${n}일차`, overnight: '숙박', milestone: '마일스톤', start: '출발', end: '도착',
         ride: (day) => `${day} 라이딩`, speed: '속도', elevation: '고도', noAddress: '주소를 불러오지 못함', unknownPlace: '알 수 없는 장소',
         next: '다음', toGo: (km) => `${km} 남음`, reached: '도착', allReached: '모든 마일스톤 도착', straight: '직선',
         lastUpload: '마지막 업로드',
+        guestbook: '메시지', yourName: '이름', yourMessage: '에티엔에게 메시지를 남겨주세요', send: '보내기', noMessage: '아직 메시지가 없어요', sendFailed: '보내지 못했어요. 다시 시도해 주세요.',
       },
       es: {
         lang: 'Idioma', total: 'Total', noRide: 'Aún no hay recorridos', dayN: (n) => `Día ${n}`, overnight: 'noche', milestone: 'hito', start: 'salida', end: 'llegada',
         ride: (day) => `Recorrido del ${day}`, speed: 'velocidad', elevation: 'altitud', noAddress: 'dirección no disponible', unknownPlace: 'lugar desconocido',
         next: 'Siguiente', toGo: (km) => `faltan ${km}`, reached: 'alcanzado', allReached: 'Todos los hitos alcanzados', straight: 'en línea recta',
         lastUpload: 'Última subida',
+        guestbook: 'Mensajes', yourName: 'Tu nombre', yourMessage: 'Deja un mensaje para Etienne', send: 'Enviar', noMessage: 'Aún no hay mensajes', sendFailed: 'No se pudo enviar. Inténtalo de nuevo.',
       },
       fr: {
         lang: 'Langue', total: 'Total', noRide: 'Pas encore de sortie', dayN: (n) => `Jour ${n}`, overnight: 'nuit', milestone: 'étape', start: 'départ', end: 'arrivée',
         ride: (day) => `Sortie du ${day}`, speed: 'vitesse', elevation: 'altitude', noAddress: 'adresse indisponible', unknownPlace: 'lieu inconnu',
         next: 'Prochaine étape', toGo: (km) => `encore ${km}`, reached: 'atteinte', allReached: 'Toutes les étapes atteintes', straight: 'à vol d’oiseau',
         lastUpload: 'Dernier envoi',
+        guestbook: 'Messages', yourName: 'Ton nom', yourMessage: 'Laisse un message à Etienne', send: 'Envoyer', noMessage: 'Pas encore de message', sendFailed: 'Envoi impossible. Réessaie.',
       },
       ja: {
         lang: '言語', total: '合計', noRide: 'まだ走行はありません', dayN: (n) => `${n}日目`, overnight: '宿泊', milestone: 'マイルストーン', start: '出発', end: '到着',
         ride: (day) => `${day}の走行`, speed: '速度', elevation: '標高', noAddress: '住所を取得できません', unknownPlace: '不明な場所',
         next: '次', toGo: (km) => `残り${km}`, reached: '到着済み', allReached: 'すべてのマイルストーンに到着', straight: '直線',
         lastUpload: '最終アップロード',
+        guestbook: 'メッセージ', yourName: 'お名前', yourMessage: 'エティエンヌにメッセージを残してください', send: '送信', noMessage: 'まだメッセージはありません', sendFailed: '送信できませんでした。もう一度お試しください。',
       },
     };
     const langSelect = document.getElementById('lang');
@@ -222,6 +249,10 @@
     function applyLanguage() {
       document.documentElement.lang = langSelect.value;
       document.getElementById('lang-text').textContent = t('lang');
+      document.getElementById('gb-open').textContent = `💬 ${t('guestbook')}`;
+      document.getElementById('gb-name').placeholder = t('yourName');
+      document.getElementById('gb-text').placeholder = t('yourMessage');
+      document.getElementById('gb-send').textContent = t('send');
     }
     applyLanguage();
 
@@ -232,6 +263,7 @@
       drawMilestoneNext();
       drawLastUpload();
       drawLegend();
+      drawMessages();
       showRides(shownRides, false); // labels, rides box and chart in the new language
       queueCities(allRides.map(cityJob)); // city lists in the new language
     };
@@ -773,7 +805,83 @@
       routeMilestones(allRides);
     }
 
+    // Guestbook: messages kept by server.js (/api/messages), no login.
+    // The name is kept in a cookie so returning visitors need not retype it.
+    // Hidden when the API is missing (e.g. the page served by GitHub Pages).
+    const MESSAGES_URL = 'api/messages';
+    const MESSAGES_REFRESH_MS = 30 * 1000; // new messages from other visitors appear within this time
+    const NAME_COOKIE = 'guestName';
+    const NAME_COOKIE_MAX_AGE_S = 365 * 24 * 3600;
+    const gbBox = document.getElementById('gb');
+    const gbName = document.getElementById('gb-name');
+    const gbText = document.getElementById('gb-text');
+    let messages = [];
+
+    function readNameCookie() {
+      const c = document.cookie.split('; ').find((c) => c.startsWith(NAME_COOKIE + '='));
+      return c ? decodeURIComponent(c.slice(NAME_COOKIE.length + 1)) : '';
+    }
+    function saveNameCookie(name) {
+      document.cookie = `${NAME_COOKIE}=${encodeURIComponent(name)}; max-age=${NAME_COOKIE_MAX_AGE_S}; path=/; SameSite=Lax`;
+    }
+
+    // Newest first. textContent, never innerHTML: messages come from anyone.
+    function drawMessages() {
+      const list = document.getElementById('gb-list');
+      list.replaceChildren();
+      if (!messages.length) { list.textContent = t('noMessage'); return; }
+      for (const m of messages) {
+        const div = document.createElement('div');
+        div.className = 'gb-msg';
+        const meta = document.createElement('div');
+        meta.className = 'gb-meta';
+        meta.textContent = `${m.name} · ${formatDate(m.createdAt, null,
+          { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })}`;
+        div.append(meta, m.text);
+        list.append(div);
+      }
+    }
+
+    async function loadMessages() {
+      const res = await fetch(MESSAGES_URL);
+      if (!res.ok) throw new Error(`${res.status}`);
+      messages = await res.json();
+      drawMessages();
+    }
+
+    async function startGuestbook() {
+      try { await loadMessages(); } catch (e) { console.warn('guestbook', e); return; }
+      setInterval(() => loadMessages().catch((e) => console.warn('guestbook', e)), MESSAGES_REFRESH_MS);
+
+      gbName.value = readNameCookie();
+      document.getElementById('gb-open').onclick = () => {
+        gbBox.hidden = !gbBox.hidden;
+        if (!gbBox.hidden) (gbName.value ? gbText : gbName).focus();
+      };
+      document.getElementById('gb-form').onsubmit = async (e) => {
+        e.preventDefault();
+        const name = gbName.value.trim(), text = gbText.value.trim();
+        if (!name || !text) return;
+        const send = document.getElementById('gb-send');
+        send.disabled = true;
+        try {
+          const res = await fetch(MESSAGES_URL, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, text }),
+          });
+          if (!res.ok) throw new Error(`${res.status}`);
+          saveNameCookie(name);
+          gbText.value = '';
+          await loadMessages();
+        } catch (err) {
+          console.warn('guestbook send', err);
+          alert(t('sendFailed'));
+        } finally { send.disabled = false; }
+      };
+      document.getElementById('gb-open').hidden = false;
+    }
+
     showLastUpload();
+    startGuestbook();
     loadAll();
   </script>
 </body>
