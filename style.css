@@ -49,7 +49,7 @@ body { display: flex; flex-direction: column; }
 /* While the panel is closed, a ring pulses and the button wiggles now and then to draw visitors in */
 #gb-open.gb-closed { animation: gb-ring 1.8s ease-out infinite, gb-wiggle 4s ease-in-out infinite; }
 @keyframes gb-ring {
-  from { box-shadow: 0 1px 4px rgba(0, 0, 0, .3), 0 0 0 0 var(--milestone); }
+  from { box-shadow: 0 1px 4px rgba(0, 0, 0, .3), 0 0 0 0 var(--end); }
   to { box-shadow: 0 1px 4px rgba(0, 0, 0, .3), 0 0 0 10px transparent; } }
 @keyframes gb-wiggle { 0%, 85%, 100% { transform: rotate(0); } 88% { transform: rotate(-6deg); } 91% { transform: rotate(6deg); }
   94% { transform: rotate(-4deg); } 97% { transform: rotate(3deg); } }
