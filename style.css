@@ -1,0 +1,92 @@
+html, body { height: 100%; margin: 0; }
+body { display: flex; flex-direction: column; }
+#map { flex: 1; }
+/* Elevation chart under the map; hovering it marks the matching point on the route */
+#elev { position: relative; height: 140px; flex: none; background: #fff; box-shadow: 0 -1px 4px rgba(0, 0, 0, .2);
+  font: 12px sans-serif; touch-action: none; z-index: 1000; }
+#elev svg { display: block; width: 100%; height: 100%; }
+#elev-tip { position: absolute; top: 4px; display: none; pointer-events: none; white-space: nowrap; color: #222;
+  background: #fff; padding: 3px 8px; border-radius: 4px; box-shadow: 0 1px 4px rgba(0, 0, 0, .3); }
+#rides { position: absolute; top: 80px; left: 10px; z-index: 1000; background: #fff; padding: 8px 12px; border-radius: 12px;
+  font: 14px sans-serif; box-shadow: 0 1px 4px rgba(0, 0, 0, .3); max-height: 70vh; overflow-y: auto; }
+#rides table { border-collapse: collapse; }
+#rides td { padding: 2px 6px; }
+#lang { font: inherit; border: 1px solid #ccc; border-radius: 8px; padding: 2px 6px; background: #fff; }
+#rides td:last-child { text-align: right; }
+#rides tfoot td { border-top: 1px solid #ccc; font-weight: bold; }
+/* Day rows and the total row are clickable: a day shows only its rides, the total shows them all */
+#rides tbody tr, #rides tfoot tr { cursor: pointer; }
+#rides tbody tr:hover, #rides tfoot tr:hover { background: #f0f4f5; }
+#rides tr.selected { background: var(--label-bg); }
+#rides .day-n { color: #777; }
+#upload { position: absolute; top: 10px; right: 10px; z-index: 1000; background: #fff; padding: 4px 8px; border-radius: 4px;
+  font: 12px sans-serif; color: #555; box-shadow: 0 1px 4px rgba(0, 0, 0, .3); }
+#lang-box { position: absolute; bottom: 170px; right: 10px; z-index: 1000; background: #fff; padding: 6px 10px; border-radius: 12px;
+  font: 14px sans-serif; box-shadow: 0 1px 4px rgba(0, 0, 0, .3); }
+/* Language box and guestbook button share one height and stack on the right: button on top, language below */
+#lang-box, #gb-open { box-sizing: border-box; height: 34px; display: flex; align-items: center; gap: 6px; }
+#gb-open[hidden] { display: none; }
+/* Start and end labels: rounded box without the pointer; colors from LABEL_BG_COLOR and LABEL_TEXT_COLOR */
+.ride-label { font-weight: bold; color: var(--label-text); background: var(--label-bg); border-color: var(--label-bg); border-radius: 6px; }
+.ride-label::before { display: none; }
+.label-start { color: var(--start); }
+.label-end { color: var(--end); }
+/* Legend: what the map marks mean */
+#legend { position: absolute; top: 44px; right: 10px; z-index: 1000; background: #fff; padding: 6px 10px; border-radius: 12px;
+  font: 12px sans-serif; color: #333; box-shadow: 0 1px 4px rgba(0, 0, 0, .3); line-height: 1.7; }
+.swatch { display: inline-block; width: 8px; height: 8px; border: 2.5px solid; border-radius: 50%; background: #fff;
+  vertical-align: -2px; margin-right: 6px; }
+.milestone-label { color: var(--milestone); }
+.milestone-done { color: var(--milestone-done); font-weight: normal; }
+#milestone-next { margin-top: 6px; }
+/* Ring that grows and fades around the milestone Etienne is heading to */
+.milestone-pulse { width: 100%; height: 100%; border-radius: 50%; background: var(--milestone);
+  animation: milestone-pulse 1.6s ease-out infinite; }
+@keyframes milestone-pulse { from { transform: scale(1); opacity: .7; } to { transform: scale(3.5); opacity: 0; } }
+/* Guestbook: button above the language box opens the message panel */
+#gb-open { position: absolute; bottom: 212px; right: 10px; z-index: 1000; font: 14px sans-serif; background: #fff; border: 0;
+  padding: 6px 10px; border-radius: 12px; box-shadow: 0 1px 4px rgba(0, 0, 0, .3); cursor: pointer; }
+/* While the panel is closed, a ring pulses and the button wiggles now and then to draw visitors in */
+#gb-open.gb-closed { animation: gb-ring 1.8s ease-out infinite, gb-wiggle 4s ease-in-out infinite; }
+@keyframes gb-ring {
+  from { box-shadow: 0 1px 4px rgba(0, 0, 0, .3), 0 0 0 0 var(--end); }
+  to { box-shadow: 0 1px 4px rgba(0, 0, 0, .3), 0 0 0 10px transparent; } }
+@keyframes gb-wiggle { 0%, 85%, 100% { transform: rotate(0); } 88% { transform: rotate(-6deg); } 91% { transform: rotate(6deg); }
+  94% { transform: rotate(-4deg); } 97% { transform: rotate(3deg); } }
+@media (prefers-reduced-motion: reduce) { #gb-open.gb-closed { animation: none; } }
+#gb { position: absolute; bottom: 252px; right: 10px; z-index: 1000; width: min(320px, calc(100vw - 20px)); max-height: 60vh;
+  display: flex; flex-direction: column; gap: 8px; background: #fff; padding: 10px; border-radius: 12px;
+  font: 14px sans-serif; color: #222; box-shadow: 0 4px 16px rgba(0, 0, 0, .25); }
+#gb[hidden] { display: none; }
+/* Messages: one rounded bubble each, name in bold and time beside it */
+#gb-list { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; color: #777; }
+.gb-msg { background: var(--label-bg); padding: 6px 10px; border-radius: 10px; color: #222; line-height: 1.35;
+  white-space: pre-wrap; overflow-wrap: anywhere; }
+.gb-meta { font-size: 12px; color: #777; margin-bottom: 2px; }
+.gb-name { font-weight: bold; color: var(--label-text); margin-right: 6px; }
+#gb-form { display: flex; flex-direction: column; gap: 6px; padding-top: 8px; border-top: 1px solid #eee; }
+#gb-form input, #gb-form textarea, #gb-form button { font: inherit; }
+#gb-form input, #gb-form textarea { border: 1px solid #ccc; border-radius: 8px; padding: 6px 8px; }
+#gb-form input:focus, #gb-form textarea:focus { outline: none; border-color: var(--end); }
+#gb-form textarea { resize: vertical; min-height: 3em; }
+#gb-send { align-self: flex-end; border: 0; border-radius: 8px; padding: 6px 16px; background: var(--end); color: #fff;
+  font-weight: bold; cursor: pointer; }
+#gb-send:disabled { opacity: .5; cursor: default; }
+/* Phones: lower elevation chart (boxes above it follow) and denser guestbook messages */
+@media (max-width: 600px) {
+  #elev { height: 100px; }
+  #lang-box { bottom: 130px; }
+  #gb-open { bottom: 172px; }
+  #gb { bottom: 212px; gap: 6px; padding: 8px; }
+  #gb-list { gap: 4px; }
+  .gb-msg { padding: 4px 8px; font-size: 13px; line-height: 1.3; }
+  .gb-meta { font-size: 11px; margin-bottom: 0; }
+  /* iOS zooms the page into any field under 16px when it gets focus, and stays zoomed after */
+  #gb-form input, #gb-form textarea, #lang { font-size: 16px; }
+  /* Pinch zooms on phones, so the +/- buttons go and the rides box takes their place */
+  .leaflet-control-zoom { display: none; }
+  #rides { top: 10px; font-size: 12px; padding: 4px 8px; }
+  #rides td { padding: 1px 4px; }
+}
+.route-hover { pointer-events: none; } /* so the route hover popup does not block the line under the cursor */
+.leaflet-tile-pane { filter: saturate(0.4) brightness(1.05); } /* muted base map only; route and markers keep their colors */

@@ -2,55 +2,16 @@
 <html>
 <head>
   <meta charset="utf-8" />
+  <script>
+    // The GitHub Pages address was shared before the guestbook; send its visitors to the Railway server, which has the API.
+    const RAILWAY_URL = 'https://bike-log-production.up.railway.app'; // e.g. 'https://bike-log.up.railway.app'; empty: no redirect
+    if (RAILWAY_URL && location.hostname.endsWith('github.io')) location.replace(RAILWAY_URL + '/' + location.search + location.hash);
+  </script>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Etienne's bike adventure</title>
   <link rel="icon" type="image/jpeg" href="bike.jpeg" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <style>
-    html, body { height: 100%; margin: 0; }
-    body { display: flex; flex-direction: column; }
-    #map { flex: 1; }
-    /* Elevation chart under the map; hovering it marks the matching point on the route */
-    #elev { position: relative; height: 140px; flex: none; background: #fff; box-shadow: 0 -1px 4px rgba(0, 0, 0, .2);
-      font: 12px sans-serif; touch-action: none; z-index: 1000; }
-    #elev svg { display: block; width: 100%; height: 100%; }
-    #elev-tip { position: absolute; top: 4px; display: none; pointer-events: none; white-space: nowrap; color: #222;
-      background: #fff; padding: 3px 8px; border-radius: 4px; box-shadow: 0 1px 4px rgba(0, 0, 0, .3); }
-    #rides { position: absolute; top: 80px; left: 10px; z-index: 1000; background: #fff; padding: 8px 12px; border-radius: 4px;
-      font: 14px sans-serif; box-shadow: 0 1px 4px rgba(0, 0, 0, .3); max-height: 70vh; overflow-y: auto; }
-    #rides table { border-collapse: collapse; }
-    #rides td { padding: 2px 6px; }
-    #rides td:last-child { text-align: right; }
-    #rides tfoot td { border-top: 1px solid #ccc; font-weight: bold; }
-    /* Day rows and the total row are clickable: a day shows only its rides, the total shows them all */
-    #rides tbody tr, #rides tfoot tr { cursor: pointer; }
-    #rides tbody tr:hover, #rides tfoot tr:hover { background: #f0f4f5; }
-    #rides tr.selected { background: var(--label-bg); }
-    #rides .day-n { color: #777; }
-    #upload { position: absolute; top: 10px; right: 10px; z-index: 1000; background: #fff; padding: 4px 8px; border-radius: 4px;
-      font: 12px sans-serif; color: #555; box-shadow: 0 1px 4px rgba(0, 0, 0, .3); }
-    #lang-box { position: absolute; bottom: 170px; left: 10px; z-index: 1000; background: #fff; padding: 6px 10px; border-radius: 4px;
-      font: 14px sans-serif; box-shadow: 0 1px 4px rgba(0, 0, 0, .3); }
-    /* Start and end labels: rounded box without the pointer; colors from LABEL_BG_COLOR and LABEL_TEXT_COLOR */
-    .ride-label { font-weight: bold; color: var(--label-text); background: var(--label-bg); border-color: var(--label-bg); border-radius: 6px; }
-    .ride-label::before { display: none; }
-    .label-start { color: var(--start); }
-    .label-end { color: var(--end); }
-    /* Legend: what the map marks mean */
-    #legend { position: absolute; top: 44px; right: 10px; z-index: 1000; background: #fff; padding: 6px 10px; border-radius: 4px;
-      font: 12px sans-serif; color: #333; box-shadow: 0 1px 4px rgba(0, 0, 0, .3); line-height: 1.7; }
-    .swatch { display: inline-block; width: 8px; height: 8px; border: 2.5px solid; border-radius: 50%; background: #fff;
-      vertical-align: -2px; margin-right: 6px; }
-    .milestone-label { color: var(--milestone); }
-    .milestone-done { color: var(--milestone-done); font-weight: normal; }
-    #milestone-next { margin-top: 6px; }
-    /* Ring that grows and fades around the milestone Etienne is heading to */
-    .milestone-pulse { width: 100%; height: 100%; border-radius: 50%; background: var(--milestone);
-      animation: milestone-pulse 1.6s ease-out infinite; }
-    @keyframes milestone-pulse { from { transform: scale(1); opacity: .7; } to { transform: scale(3.5); opacity: 0; } }
-    .route-hover { pointer-events: none; } /* so the route hover popup does not block the line under the cursor */
-    .leaflet-tile-pane { filter: saturate(0.4) brightness(1.05); } /* muted base map only; route and markers keep their colors */
-  </style>
+  <link rel="stylesheet" href="style.css" />
 </head>
 <body>
   <div id="rides">
@@ -69,10 +30,20 @@
   <div id="map"></div>
   <div id="upload" hidden></div>
   <div id="legend"></div>
+  <button id="gb-open" hidden></button>
+  <div id="gb" hidden>
+    <div id="gb-list"></div>
+    <form id="gb-form">
+      <input id="gb-name" maxlength="40" required />
+      <textarea id="gb-text" maxlength="500" required></textarea>
+      <button id="gb-send"></button>
+    </form>
+  </div>
   <div id="elev"><svg></svg><div id="elev-tip"></div></div>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script type="module">
     import { Decoder, Stream } from 'https://cdn.jsdelivr.net/npm/@garmin/fitsdk@21.217.0/+esm';
+    import { LOCALES, TEXT } from './text.js';
 
     const map = L.map('map', { preferCanvas: true }).setView([0, 0], 2);
     // Colors muted by the .leaflet-tile-pane CSS rule. Other themes: https://leaflet-extras.github.io/leaflet-providers/preview/
@@ -179,40 +150,6 @@
       return formatDate(iso, offsetMs, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
     }
 
-    // Language of the page text, the dates and the place names (passed to Nominatim as accept-language).
-    const LOCALES = { ko: 'ko-KR', es: 'es-MX', fr: 'fr-FR', en: 'en-GB', ja: 'ja-JP' };
-    const TEXT = {
-      en: {
-        lang: 'Language', total: 'Total', noRide: 'No ride yet', dayN: (n) => `Day ${n}`, overnight: 'overnight', milestone: 'milestone', start: 'start', end: 'end',
-        ride: (day) => `${day} ride`, speed: 'speed', elevation: 'elevation', noAddress: 'address unavailable', unknownPlace: 'unknown place',
-        next: 'Next', toGo: (km) => `${km} to go`, reached: 'reached', allReached: 'All milestones reached', straight: 'straight',
-        lastUpload: 'Last upload',
-      },
-      ko: {
-        lang: '언어', total: '합계', noRide: '아직 라이딩이 없어요', dayN: (n) => `${n}일차`, overnight: '숙박', milestone: '마일스톤', start: '출발', end: '도착',
-        ride: (day) => `${day} 라이딩`, speed: '속도', elevation: '고도', noAddress: '주소를 불러오지 못함', unknownPlace: '알 수 없는 장소',
-        next: '다음', toGo: (km) => `${km} 남음`, reached: '도착', allReached: '모든 마일스톤 도착', straight: '직선',
-        lastUpload: '마지막 업로드',
-      },
-      es: {
-        lang: 'Idioma', total: 'Total', noRide: 'Aún no hay recorridos', dayN: (n) => `Día ${n}`, overnight: 'noche', milestone: 'hito', start: 'salida', end: 'llegada',
-        ride: (day) => `Recorrido del ${day}`, speed: 'velocidad', elevation: 'altitud', noAddress: 'dirección no disponible', unknownPlace: 'lugar desconocido',
-        next: 'Siguiente', toGo: (km) => `faltan ${km}`, reached: 'alcanzado', allReached: 'Todos los hitos alcanzados', straight: 'en línea recta',
-        lastUpload: 'Última subida',
-      },
-      fr: {
-        lang: 'Langue', total: 'Total', noRide: 'Pas encore de sortie', dayN: (n) => `Jour ${n}`, overnight: 'nuit', milestone: 'étape', start: 'départ', end: 'arrivée',
-        ride: (day) => `Sortie du ${day}`, speed: 'vitesse', elevation: 'altitude', noAddress: 'adresse indisponible', unknownPlace: 'lieu inconnu',
-        next: 'Prochaine étape', toGo: (km) => `encore ${km}`, reached: 'atteinte', allReached: 'Toutes les étapes atteintes', straight: 'à vol d’oiseau',
-        lastUpload: 'Dernier envoi',
-      },
-      ja: {
-        lang: '言語', total: '合計', noRide: 'まだ走行はありません', dayN: (n) => `${n}日目`, overnight: '宿泊', milestone: 'マイルストーン', start: '出発', end: '到着',
-        ride: (day) => `${day}の走行`, speed: '速度', elevation: '標高', noAddress: '住所を取得できません', unknownPlace: '不明な場所',
-        next: '次', toGo: (km) => `残り${km}`, reached: '到着済み', allReached: 'すべてのマイルストーンに到着', straight: '直線',
-        lastUpload: '最終アップロード',
-      },
-    };
     const langSelect = document.getElementById('lang');
     const t = (key) => TEXT[langSelect.value][key];
     try { langSelect.value = localStorage.getItem('lang') || 'en'; } catch {}
@@ -222,6 +159,10 @@
     function applyLanguage() {
       document.documentElement.lang = langSelect.value;
       document.getElementById('lang-text').textContent = t('lang');
+      document.getElementById('gb-open').textContent = `💬 ${t('guestbook')}`;
+      document.getElementById('gb-name').placeholder = t('yourName');
+      document.getElementById('gb-text').placeholder = t('yourMessage');
+      document.getElementById('gb-send').textContent = t('send');
     }
     applyLanguage();
 
@@ -232,6 +173,7 @@
       drawMilestoneNext();
       drawLastUpload();
       drawLegend();
+      drawMessages();
       showRides(shownRides, false); // labels, rides box and chart in the new language
       queueCities(allRides.map(cityJob)); // city lists in the new language
     };
@@ -773,7 +715,100 @@
       routeMilestones(allRides);
     }
 
+    // Guestbook: messages kept by server.js (/api/messages), no login.
+    // The name is kept in a cookie so returning visitors need not retype it.
+    // Hidden when the API is missing (e.g. the page served by GitHub Pages).
+    const MESSAGES_URL = 'api/messages';
+    const MESSAGES_REFRESH_MS = 30 * 1000; // new messages from other visitors appear within this time
+    const NAME_COOKIE = 'guestName';
+    const NAME_COOKIE_MAX_AGE_S = 365 * 24 * 3600;
+    const gbBox = document.getElementById('gb');
+    const gbName = document.getElementById('gb-name');
+    const gbText = document.getElementById('gb-text');
+    let messages = [];
+
+    function readNameCookie() {
+      const c = document.cookie.split('; ').find((c) => c.startsWith(NAME_COOKIE + '='));
+      return c ? decodeURIComponent(c.slice(NAME_COOKIE.length + 1)) : '';
+    }
+    function saveNameCookie(name) {
+      document.cookie = `${NAME_COOKIE}=${encodeURIComponent(name)}; max-age=${NAME_COOKIE_MAX_AGE_S}; path=/; SameSite=Lax`;
+    }
+
+    // Oldest first (the API returns newest first). textContent, never innerHTML: messages come from anyone.
+    function drawMessages() {
+      const list = document.getElementById('gb-list');
+      list.replaceChildren();
+      if (!messages.length) { list.textContent = t('noMessage'); return; }
+      for (const m of [...messages].reverse()) {
+        const div = document.createElement('div');
+        div.className = 'gb-msg';
+        const meta = document.createElement('div');
+        meta.className = 'gb-meta';
+        const name = document.createElement('span');
+        name.className = 'gb-name';
+        name.textContent = m.name;
+        meta.append(name, formatDate(m.createdAt, null,
+          { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }));
+        div.append(meta, m.text);
+        list.append(div);
+      }
+    }
+
+    async function loadMessages() {
+      const res = await fetch(MESSAGES_URL);
+      if (!res.ok) throw new Error(`${res.status}`);
+      messages = await res.json();
+      drawMessages();
+    }
+
+    async function startGuestbook() {
+      try { await loadMessages(); } catch (e) { console.warn('guestbook', e); return; }
+      setInterval(() => loadMessages().catch((e) => console.warn('guestbook', e)), MESSAGES_REFRESH_MS);
+
+      gbName.value = readNameCookie();
+      const gbOpen = document.getElementById('gb-open');
+      gbOpen.classList.add('gb-closed');
+      const showGuestbook = (open) => {
+        gbBox.hidden = !open;
+        gbOpen.classList.toggle('gb-closed', !open);
+        if (open) (gbName.value ? gbText : gbName).focus();
+      };
+      gbOpen.onclick = () => showGuestbook(gbBox.hidden);
+      // A press anywhere outside the panel and its button closes the panel. Capture phase: the map cannot swallow it.
+      document.addEventListener('pointerdown', (e) => {
+        if (!gbBox.hidden && !gbBox.contains(e.target) && !gbOpen.contains(e.target)) showGuestbook(false);
+      }, true);
+      document.getElementById('gb-form').onsubmit = async (e) => {
+        e.preventDefault();
+        const name = gbName.value.trim(), text = gbText.value.trim();
+        if (!name || !text) return;
+        const send = document.getElementById('gb-send');
+        send.disabled = true;
+        try {
+          const res = await fetch(MESSAGES_URL, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, text }),
+          });
+          if (!res.ok) throw new Error(`${res.status}`);
+          saveNameCookie(name);
+          gbText.value = '';
+          await loadMessages();
+        } catch (err) {
+          console.warn('guestbook send', err);
+          alert(t('sendFailed'));
+        } finally { send.disabled = false; }
+      };
+      // Enter sends, Shift+Enter adds a new line. isComposing: Korean/Japanese IME uses Enter to confirm a character.
+      gbText.addEventListener('keydown', (e) => {
+        if (e.key !== 'Enter' || e.shiftKey || e.isComposing || e.keyCode === 229) return;
+        e.preventDefault();
+        if (!document.getElementById('gb-send').disabled) document.getElementById('gb-form').requestSubmit();
+      });
+      document.getElementById('gb-open').hidden = false;
+    }
+
     showLastUpload();
+    startGuestbook();
     loadAll();
   </script>
 </body>
