@@ -716,6 +716,7 @@
     // Flag whose pole stands on p: solid START_COLOR for the start, checkered for the finish.
     // Not interactive, so hover and click reach the dot below. Own pane above the labels, which would hide it near a milestone.
     map.createPane('flags').style.zIndex = 660; // tooltipPane is 650
+    map.createPane('etienne').style.zIndex = 655; // Etienne's photo: above the labels, under the flags
     function flagMarker(p, checkered) {
       const cloth = checkered
         ? [0, 1, 2].flatMap((c) => [0, 1].map((r) =>
@@ -871,9 +872,10 @@
       });
 
       // Etienne's photo on the last point; not interactive, so hover and click reach the end marker below.
+      // Own pane above the labels, so a milestone name at the same place does not cover it.
       const end = points[points.length - 1];
       L.marker([end.lat, end.lng], {
-        interactive: false,
+        pane: 'etienne', interactive: false,
         icon: L.icon({ iconUrl: 'etienne.webp', iconSize: [ETIENNE_SIZE, ETIENNE_SIZE] }),
       }).addTo(layer);
     }
