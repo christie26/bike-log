@@ -41,6 +41,10 @@ body { display: flex; flex-direction: column; }
   font: 12px sans-serif; color: #333; box-shadow: 0 1px 4px rgba(0, 0, 0, .3); line-height: 1.7; }
 .swatch { display: inline-block; width: 8px; height: 8px; border: 2.5px solid; border-radius: 50%; background: #fff;
   vertical-align: -2px; margin-right: 6px; }
+/* Train and ferry legs: gray line in the legend, round icon on the map */
+.line-swatch { display: inline-block; width: 14px; height: 3px; background: var(--transit); vertical-align: 3px; margin-right: 4px; }
+.mode-icon { display: flex; align-items: center; justify-content: center; font-size: 13px; background: #fff;
+  border: 1.5px solid var(--transit); border-radius: 50%; box-sizing: border-box; }
 .milestone-label { color: var(--milestone); }
 .milestone-done { color: var(--milestone-done); font-weight: normal; }
 #milestone-next { margin-top: 6px; }

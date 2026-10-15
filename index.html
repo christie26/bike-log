@@ -70,15 +70,25 @@
     const MILESTONE_COLOR = '#d9822b'; // milestones not reached yet; the next one is filled
     const MILESTONE_DONE_COLOR = '#9aa5a8'; // milestones already reached
     const FLAG_SIZE = 28; // flags on the trip's first point and the last milestone, in px
+    const TRANSIT_COLOR = '#a3a9ab'; // train and ferry legs, on the map and the chart
+    const MODE_ICONS = { train: '🚆', ferry: '⛴️' };
     document.documentElement.style.setProperty('--label-bg', LABEL_BG_COLOR);
     document.documentElement.style.setProperty('--label-text', LABEL_TEXT_COLOR);
     document.documentElement.style.setProperty('--start', START_COLOR);
     document.documentElement.style.setProperty('--end', END_COLOR);
     document.documentElement.style.setProperty('--milestone', MILESTONE_COLOR);
     document.documentElement.style.setProperty('--milestone-done', MILESTONE_DONE_COLOR);
+    document.documentElement.style.setProperty('--transit', TRANSIT_COLOR);
 
-    // Decode a .fit file into rides: [{file, points [{date, lat, lng, speed, alt}], km, offsetMs}].
-    // A multi-day file is split into one ride per pause longer than RIDE_GAP_MS.
+    // Legs not done by bike, from transport.json, in two forms:
+    //   recorded: {mode, start, end}: points between these times were recorded on a train or ferry;
+    //   unrecorded: {mode, day, path [[lat, lng], ...]}: drawn as a dashed line, no points.
+    let legs = [];
+    const modeAt = (iso) => legs.find((l) => l.start && new Date(l.start) <= new Date(iso) && new Date(iso) < new Date(l.end))?.mode || 'bike';
+
+    // Decode a .fit file into rides: [{file, points [{date, lat, lng, speed, alt}], km, offsetMs, mode}].
+    // A multi-day file is split into one ride per pause longer than RIDE_GAP_MS,
+    // and where the mode changes (e.g. bike to ferry).
     // FIT stores positions in semicircles, speed in m/s and altitude in m.
     function parseFit(buffer, file) {
       const { messages, errors } = new Decoder(Stream.fromArrayBuffer(buffer)).read();
@@ -106,16 +116,19 @@
 
       const segments = [];
       points.forEach((p, i) => {
-        if (!i || new Date(p.date) - new Date(points[i - 1].date) > RIDE_GAP_MS) segments.push([]);
-        segments[segments.length - 1].push(p);
+        const mode = modeAt(p.date);
+        if (!i || new Date(p.date) - new Date(points[i - 1].date) > RIDE_GAP_MS || mode !== segments[segments.length - 1].mode) {
+          segments.push({ mode, points: [] });
+        }
+        segments[segments.length - 1].points.push(p);
       });
-      // Use the device's recorded distance for a single ride; otherwise sum the GPS track of each ride.
+      // Use the device's recorded distance for a single bike ride; otherwise sum the GPS track of each ride.
       const sessionM = (messages.sessionMesgs || []).reduce((sum, s) => sum + (s.totalDistance || 0), 0);
-      return segments.map((seg) => {
+      return segments.map(({ mode, points: seg }) => {
         let trackM = 0;
         for (let i = 1; i < seg.length; i++) trackM += L.latLng(seg[i - 1]).distanceTo(seg[i]);
-        const km = ((segments.length === 1 && sessionM) || trackM) / 1000;
-        return { file, points: seg, km, offsetMs };
+        const km = ((segments.length === 1 && mode === 'bike' && sessionM) || trackM) / 1000;
+        return { file, points: seg, km, offsetMs, mode };
       });
     }
 
@@ -274,7 +287,9 @@
       const first = ride.points[0], last = ride.points[ride.points.length - 1];
       const min = Math.round((new Date(last.date) - new Date(first.date)) / 60000);
       const route = cities.join(' → ') + (loading ? ' → …' : '');
-      return `<b>${t('ride')(dayMonth(first.date, ride.offsetMs))}</b><br>${route.replace(/^ → /, '')}`
+      const day = dayMonth(first.date, ride.offsetMs);
+      const title = ride.mode === 'bike' ? t('ride')(day) : `${MODE_ICONS[ride.mode]} ${t(ride.mode)} · ${day}`;
+      return `<b>${title}</b><br>${route.replace(/^ → /, '')}`
         + `<br>${ride.km.toFixed(1)} km, ${Math.floor(min / 60)}h ${String(min % 60).padStart(2, '0')}m`
         + `<br>${dayTime(first.date, ride.offsetMs)} → ${dayTime(last.date, ride.offsetMs)}`;
     }
@@ -341,16 +356,25 @@
       const list = document.getElementById('ride-list');
       if (!allRides.length) { list.textContent = t('noRide'); return; }
       // One row per day: rides are in time order, so rides of the same day are adjacent.
+      // Distances count the bike only; train and ferry legs show as icons.
       const days = [];
       allRides.forEach((r, i) => {
         if (!i || rideDay(allRides[i - 1]) !== rideDay(r)) {
-          days.push({ day: rideDay(r), n: tripDay(r), label: dayMonth(r.points[0].date, r.offsetMs), km: 0 });
+          days.push({ day: rideDay(r), n: tripDay(rideDay(r)), label: dayMonth(r.points[0].date, r.offsetMs), km: 0, bike: false, icons: '' });
         }
-        days[days.length - 1].km += r.km;
+        const d = days[days.length - 1];
+        if (r.mode === 'bike') { d.km += r.km; d.bike = true; } else if (!d.icons.includes(MODE_ICONS[r.mode])) d.icons += ` ${MODE_ICONS[r.mode]}`;
       });
+      // Unrecorded legs (e.g. the 11 Oct ferry) get their own row when no ride is recorded that day.
+      legs.filter((l) => l.path).forEach((l) => {
+        const d = days.find((x) => x.day === l.day);
+        if (d) { if (!d.icons.includes(MODE_ICONS[l.mode])) d.icons += ` ${MODE_ICONS[l.mode]}`; return; }
+        days.push({ day: l.day, n: tripDay(l.day), label: dayMonth(`${l.day}T12:00:00Z`, 0), km: 0, bike: false, icons: ` ${MODE_ICONS[l.mode]}` });
+      });
+      days.sort((a, b) => a.day.localeCompare(b.day));
       const rows = days.map((d) => `<tr data-day="${d.day}"${d.day === pickedDay ? ' class="selected"' : ''}>`
-        + `<td><span class="day-n">${t('dayN')(d.n)}</span> · ${d.label}</td><td>${d.km.toFixed(1)} km</td></tr>`).join('');
-      const total = allRides.reduce((sum, r) => sum + r.km, 0);
+        + `<td><span class="day-n">${t('dayN')(d.n)}</span> · ${d.label}${d.icons}</td><td>${d.bike ? `${d.km.toFixed(1)} km` : '–'}</td></tr>`).join('');
+      const total = allRides.reduce((sum, r) => sum + (r.mode === 'bike' ? r.km : 0), 0);
       list.innerHTML = `<table><tbody>${rows}</tbody>`
         + `<tfoot><tr><td>${t('total')}</td><td>${total.toFixed(1)} km</td></tr></tfoot></table>`;
       list.querySelectorAll('tbody tr').forEach((tr) => tr.onclick = () => pickDay(tr.dataset.day === pickedDay ? '' : tr.dataset.day));
@@ -410,14 +434,15 @@
       for (let km = 0; km <= totalKm; km += xStep) {
         svg += `<text x="${x(km)}" y="${h - 5}" text-anchor="middle" fill="#666">${+km.toFixed(2)} km</text>`;
       }
-      // One area and line per ride, so a gap between days is not bridged.
+      // One area and line per ride, so a gap between days is not bridged; train and ferry legs in gray.
       starts.forEach((s) => {
         const pts = points.filter((e) => e.ride === s.ride);
         if (!pts.length) return;
         const line = pts.map((e, i) => `${i ? 'L' : 'M'}${x(e.km).toFixed(1)},${y(e.p.alt).toFixed(1)}`).join('');
         const base = y(lo);
-        svg += `<path d="${line}L${x(pts[pts.length - 1].km)},${base}L${x(pts[0].km)},${base}Z" fill="${LINE_COLOR}" fill-opacity="${ELEV_FILL_OPACITY}" />`
-          + `<path d="${line}" fill="none" stroke="${LINE_COLOR}" stroke-width="2" stroke-linejoin="round" />`;
+        const color = s.ride.mode === 'bike' ? LINE_COLOR : TRANSIT_COLOR;
+        svg += `<path d="${line}L${x(pts[pts.length - 1].km)},${base}L${x(pts[0].km)},${base}Z" fill="${color}" fill-opacity="${ELEV_FILL_OPACITY}" />`
+          + `<path d="${line}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round" />`;
       });
       // One date line per day, at the start of its first ride.
       const dayStarts = starts.filter((s, i) => !i || rideDay(starts[i - 1].ride) !== rideDay(s.ride));
@@ -624,6 +649,14 @@
       box.hidden = false;
     }
 
+    // Small round icon on a train or ferry leg; hover shows "🚆 train · 12 Oct".
+    function modeMarker(latlng, mode, day, unrecorded) {
+      const tip = `${MODE_ICONS[mode]} ${t(mode)} · ${day}${unrecorded ? ` (${t('notRecorded')})` : ''}`;
+      return L.marker(latlng, {
+        icon: L.divIcon({ className: 'mode-icon', html: MODE_ICONS[mode], iconSize: [22, 22] }),
+      }).bindTooltip(tip, { direction: 'top', offset: [0, -11] });
+    }
+
     // Draw the given rides: route line, start and end markers, elevation chart and rides box.
     // fit: zoom the map to the rides; off when only the language changes.
     let shownRides = [];
@@ -641,14 +674,35 @@
       elevBox.hidden = !elev;
       map.invalidateSize();
       if (elev) drawElevation();
-      if (!points.length) return;
+      // Unrecorded legs: in the full view, or when their day is picked; a day with only these is fitted to them.
+      const shownLegs = legs.filter((l) => l.path && (!pickedDay || pickedDay === l.day));
+      shownLegs.forEach((l) => {
+        L.polyline(l.path, { color: TRANSIT_COLOR, weight: 3, dashArray: '2 8', interactive: false }).addTo(layer);
+        modeMarker(L.latLngBounds(l.path).getCenter(), l.mode, dayMonth(`${l.day}T12:00:00Z`, 0), true).addTo(layer);
+      });
+      if (!points.length) {
+        if (fit && shownLegs.length) map.fitBounds(L.latLngBounds(shownLegs.flatMap((l) => l.path)), { padding: [30, 30] });
+        return;
+      }
 
       // Separate line per ride, so different days are not joined by a straight line.
-      const latlngs = rides.map((r) => r.points.map((p) => [p.lat, p.lng]));
-      const line = L.polyline(latlngs, { color: LINE_COLOR, weight: 4, interactive: false }).addTo(layer);
+      // Train and ferry legs: thinner gray line with the mode icon at the middle.
+      const toLatLngs = (rs) => rs.map((r) => r.points.map((p) => [p.lat, p.lng]));
+      const latlngs = toLatLngs(rides);
+      L.polyline(toLatLngs(rides.filter((r) => r.mode !== 'bike')), { color: TRANSIT_COLOR, weight: 3, interactive: false }).addTo(layer);
+      L.polyline(toLatLngs(rides.filter((r) => r.mode === 'bike')), { color: LINE_COLOR, weight: 4, interactive: false }).addTo(layer);
       L.polyline(latlngs, { opacity: 0, weight: ROUTE_HIT_PX }).addTo(layer)
         .on('mousemove', hoverRoute).on('mouseout', leaveRoute);
-      if (fit) map.fitBounds(line.getBounds(), { padding: [30, 30] });
+      if (fit) map.fitBounds(L.latLngBounds(latlngs.flat()), { padding: [30, 30] });
+      rides.filter((r) => r.mode !== 'bike').forEach((r) => {
+        // Middle in distance: the first point past half the leg's length.
+        let m = 0, mid = r.points[r.points.length - 1];
+        for (let i = 1; i < r.points.length; i++) {
+          m += L.latLng(r.points[i - 1]).distanceTo(r.points[i]);
+          if (m >= r.km * 1000 / 2) { mid = r.points[i]; break; }
+        }
+        modeMarker(mid, r.mode, dayMonth(r.points[0].date, r.offsetMs), false).addTo(layer);
+      });
 
       // Labels only at the first start and the last end of each day, with the date colored by start or end;
       // other ride starts and ends get a small dot. A day's end and the next day's start closer than
@@ -687,7 +741,7 @@
     let pickedDay = '';
     const rideDay = (r) => isoDay(r.points[0].date, r.offsetMs);
     // Day of the trip, counted from the first ride's day; rest days count too. "2026-10-04" parses as UTC midnight.
-    const tripDay = (r) => Math.round((new Date(rideDay(r)) - new Date(rideDay(allRides[0]))) / 86400000) + 1;
+    const tripDay = (day) => Math.round((new Date(day) - new Date(rideDay(allRides[0]))) / 86400000) + 1;
     function pickDay(day) {
       pickedDay = day;
       showRides(day ? allRides.filter((r) => rideDay(r) === day) : allRides);
@@ -701,6 +755,7 @@
         `${swatch(END_COLOR)}${t('end')}`,
         `<b><span class="label-end">A</span> → <span class="label-start">B</span></b> ${t('overnight')}`,
         `${swatch(MILESTONE_COLOR)}${t('milestone')}`,
+        ...Object.entries(MODE_ICONS).map(([mode, icon]) => `<span class="line-swatch"></span>${icon} ${t(mode)}`),
         `<label class="legend-toggle"><input type="checkbox" id="date-toggle"${hideDates ? '' : ' checked'}>${t('dateLabels')}</label>`,
       ].join('<br>');
       document.getElementById('date-toggle').onchange = (e) => {
@@ -721,6 +776,8 @@
     async function loadAll() {
       const milestoneList = fetch('milestones.json').then((r) => r.json())
         .catch((e) => { console.warn('milestones', e); return []; });
+      legs = await fetch('transport.json').then((r) => r.json())
+        .catch((e) => { console.warn('transport', e); return []; }); // before parseFit, which splits rides by mode
       const files = await (await fetch('files.json')).json();
       const buffers = await Promise.all(files.map(async (f) =>
         (await fetch('coordinate/' + encodeURIComponent(f))).arrayBuffer()));
