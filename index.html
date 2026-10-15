@@ -391,10 +391,12 @@
       if (!elev) return;
       const { points, starts, totalKm } = elev;
       const w = elevBox.clientWidth, h = elevBox.clientHeight;
-      const alts = points.map((e) => e.p.alt);
-      const yStep = niceStep((Math.max(...alts) - Math.min(...alts)) / 3);
-      const lo = Math.floor(Math.min(...alts) / yStep) * yStep;
-      const hi = Math.max(Math.ceil(Math.max(...alts) / yStep) * yStep, lo + yStep);
+      // A loop, not Math.min(...alts): spreading 100k+ points overflows the call stack.
+      let minAlt = Infinity, maxAlt = -Infinity;
+      points.forEach((e) => { minAlt = Math.min(minAlt, e.p.alt); maxAlt = Math.max(maxAlt, e.p.alt); });
+      const yStep = niceStep((maxAlt - minAlt) / 3);
+      const lo = Math.floor(minAlt / yStep) * yStep;
+      const hi = Math.max(Math.ceil(maxAlt / yStep) * yStep, lo + yStep);
       const x = elev.x = (km) => ELEV_PAD.left + km / (totalKm || 1) * (w - ELEV_PAD.left - ELEV_PAD.right);
       const y = elev.y = (alt) => h - ELEV_PAD.bottom - (alt - lo) / (hi - lo) * (h - ELEV_PAD.top - ELEV_PAD.bottom);
 
