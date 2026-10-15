@@ -29,6 +29,11 @@ body { display: flex; flex-direction: column; }
 /* Start and end labels: rounded box without the pointer; colors from LABEL_BG_COLOR and LABEL_TEXT_COLOR */
 .ride-label { font-weight: bold; color: var(--label-text); background: var(--label-bg); border-color: var(--label-bg); border-radius: 6px; }
 .ride-label::before { display: none; }
+/* Date and milestone labels: smaller than Leaflet's default tooltip (12px, 6px padding) */
+.date-label, .milestone-label { font-size: 11px; padding: 3px 5px; border-radius: 5px; }
+.hide-dates .date-label { display: none; } /* toggle in the legend */
+.legend-toggle { cursor: pointer; }
+.legend-toggle input { margin: 0 6px 0 0; vertical-align: -2px; }
 .label-start { color: var(--start); }
 .label-end { color: var(--end); }
 /* Legend: what the map marks mean */

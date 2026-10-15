@@ -6,5 +6,6 @@
     { "name": "Yawatahama ferry terminal", "lat": 33.45773389518295, "lng": 132.41781275714618 },
     { "name": "Imabari castle", "lat": 34.06355597678772, "lng": 133.00734259471574 },
     { "name": "Kurashiki", "lat": 34.5957520099519, "lng": 133.77174523993895 },
+    { "name": "Osaka castle", "lat": 34.687315, "lng": 135.526201 },
     { "name": "Tokyo tower", "lat": 35.65845786488148, "lng": 139.74538293983485 }
 ]

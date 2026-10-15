@@ -60,7 +60,8 @@
     const END_COLOR = '#2a5674'; // end circle and its label text
     const HOVER_COLOR = '#2a5674'; // marker under the pointer, on the map and the chart
     const OVERNIGHT_M = 500; // a day's end and the next day's start closer than this share one label
-    const END_RADIUS = 6; // start and end circles; route dots have radius 3
+    const END_RADIUS = 5; // start and end circles, milestone dots and the hover marker; route dots have radius 3
+    const END_WEIGHT = 2.5; // outline of those circles
     const STOP_RADIUS = 3; // small dot where a ride starts or ends in the middle of a day
     const LABEL_BG_COLOR = '#e9f2f3'; // background of the start and end labels; last 2 digits = opacity (b3 = 70%)
     const LABEL_TEXT_COLOR = '#2a5674'; // text of the labels, unless colored by start or end
@@ -233,12 +234,12 @@
     map.createPane('ends').style.zIndex = 450;
     const endsRenderer = L.svg({ pane: 'ends' });
 
-    // tooltip: HTML of the permanent label; null for no label. text: title of the hover popup.
+    // tooltip: HTML of the permanent label, under the dot; null for no label. text: title of the hover popup.
     function labelMarker(p, text, color, tooltip, labelGap = END_RADIUS) {
       const marker = L.circleMarker([p.lat, p.lng], {
-        renderer: endsRenderer, radius: END_RADIUS, color, weight: 3, fillColor: '#ffffff', fillOpacity: 1,
+        renderer: endsRenderer, radius: END_RADIUS, color, weight: END_WEIGHT, fillColor: '#ffffff', fillOpacity: 1,
       });
-      if (tooltip) marker.bindTooltip(tooltip, { permanent: true, direction: 'top', offset: [0, -labelGap], className: 'ride-label' });
+      if (tooltip) marker.bindTooltip(tooltip, { permanent: true, direction: 'bottom', offset: [0, labelGap], className: 'ride-label date-label' });
       return bindPlacePopup(marker, p, text);
     }
 
@@ -362,7 +363,7 @@
     const elevSvg = elevBox.querySelector('svg');
     const elevTip = document.getElementById('elev-tip');
     const hoverMarker = L.circleMarker([0, 0], {
-      renderer: endsRenderer, radius: END_RADIUS, color: HOVER_COLOR, weight: 3, fillColor: '#ffffff', fillOpacity: 1, interactive: false,
+      renderer: endsRenderer, radius: END_RADIUS, color: HOVER_COLOR, weight: END_WEIGHT, fillColor: '#ffffff', fillOpacity: 1, interactive: false,
     });
     let elev = null; // {points [{p, km}], starts [{km, ride}], totalKm, x, y}
 
@@ -568,7 +569,7 @@
       const finish = m === milestones[milestones.length - 1];
       const color = m.reached ? MILESTONE_DONE_COLOR : MILESTONE_COLOR;
       const marker = L.circleMarker([m.lat, m.lng], {
-        renderer: endsRenderer, radius: END_RADIUS, color, weight: 3, fillColor: next ? color : '#ffffff', fillOpacity: 1,
+        renderer: endsRenderer, radius: END_RADIUS, color, weight: END_WEIGHT, fillColor: next ? color : '#ffffff', fillOpacity: 1,
       }).bindTooltip(m.name, {
         permanent: true, direction: 'top', offset: [0, -(finish ? FLAG_SIZE : END_RADIUS)], className: `ride-label milestone-label${m.reached ? ' milestone-done' : ''}`,
       });
@@ -577,7 +578,8 @@
         .on('mouseout', () => marker.closePopup());
     }
 
-    // Milestone dots; the one Etienne is heading to pulses and gets a dashed line from his last point.
+    // Milestone dots; the one Etienne is heading to pulses and gets a dashed line from his last point,
+    // and a fainter dashed line joins the milestones still ahead.
     // Flags mark the trip's first point and the last milestone, whatever day is picked.
     map.createPane('pulse').style.zIndex = 440; // under the milestone dots in the 'ends' pane
     function drawMilestones() {
@@ -586,7 +588,7 @@
       if (allRides.length) flagMarker(allRides[0].points[0], false).addTo(layer);
       const next = milestones.find((m) => !m.reached);
       if (!next) return;
-      const size = 2 * END_RADIUS + 3; // dot with its outline
+      const size = 2 * (END_RADIUS + END_WEIGHT); // dot with its outline
       L.marker([next.lat, next.lng], {
         pane: 'pulse', interactive: false,
         icon: L.divIcon({ className: '', html: '<div class="milestone-pulse"></div>', iconSize: [size, size] }),
@@ -594,6 +596,11 @@
       const here = allRides.length && allRides[allRides.length - 1].points.slice(-1)[0];
       if (here) L.polyline([[here.lat, here.lng], [next.lat, next.lng]], {
         color: MILESTONE_COLOR, weight: 3, dashArray: '6 8', interactive: false,
+      }).addTo(layer);
+      // Fainter dashed line on through the milestones after the next one, to the finish.
+      const ahead = milestones.filter((m) => !m.reached);
+      if (ahead.length > 1) L.polyline(ahead.map((m) => [m.lat, m.lng]), {
+        color: MILESTONE_COLOR, weight: 2, opacity: 0.5, dashArray: '4 8', interactive: false,
       }).addTo(layer);
     }
 
@@ -660,8 +667,8 @@
           let tooltip = dateSpan(p, r, text);
           if (text === 'start' && overnightBefore) tooltip = null; // label is on the previous day's end
           if (text === 'end' && overnightAfter) tooltip += ` → ${dateSpan(next.points[0], next, 'start')}`;
-          const tripStart = p === allRides[0].points[0];
-          const gap = pathEnd && text === 'end' ? ETIENNE_SIZE / 2 : tripStart ? FLAG_SIZE : END_RADIUS;
+          // The photo is centered on the last point; the start flag stands above its point, so it does not reach the label.
+          const gap = pathEnd && text === 'end' ? ETIENNE_SIZE / 2 : END_RADIUS;
           const marker = (labeled ? labelMarker(p, label, color, tooltip, gap) : stopMarker(p, label, color)).addTo(layer);
           // The hover popup's own click handler runs first and closes it; then the summary opens.
           marker.on('click', () => showSummary(r, marker.getLatLng()));
@@ -694,8 +701,20 @@
         `${swatch(END_COLOR)}${t('end')}`,
         `<b><span class="label-end">A</span> → <span class="label-start">B</span></b> ${t('overnight')}`,
         `${swatch(MILESTONE_COLOR)}${t('milestone')}`,
+        `<label class="legend-toggle"><input type="checkbox" id="date-toggle"${hideDates ? '' : ' checked'}>${t('dateLabels')}</label>`,
       ].join('<br>');
+      document.getElementById('date-toggle').onchange = (e) => {
+        hideDates = !e.target.checked;
+        try { localStorage.setItem('hideDates', hideDates ? '1' : ''); } catch {}
+        applyDateToggle();
+      };
     }
+
+    // Toggle in the legend that hides the date labels on the route; remembered in localStorage.
+    let hideDates = false;
+    try { hideDates = !!localStorage.getItem('hideDates'); } catch {}
+    const applyDateToggle = () => document.getElementById('map').classList.toggle('hide-dates', hideDates);
+    applyDateToggle();
     drawLegend();
 
     let allRides = [];
