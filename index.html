@@ -16,6 +16,7 @@
 <body>
   <div id="rides">
     <div id="ride-list"></div>
+    <button id="rides-toggle" hidden></button>
     <div id="milestone-next" hidden></div>
   </div>
   <label id="lang-box"><span id="lang-text">Language</span>
@@ -383,11 +384,46 @@
       const rows = days.map((d) => `<tr data-day="${d.day}"${d.day === pickedDay ? ' class="selected"' : ''}>`
         + `<td><span class="day-n">${t('dayN')(d.n)}</span> · ${d.label}${d.icons}${d.note || ''}</td><td>${d.bike ? `${d.km.toFixed(1)} km` : '–'}</td></tr>`).join('');
       const total = allRides.reduce((sum, r) => sum + (r.mode === 'bike' ? r.km : 0), 0);
+      const scrollTop = list.scrollTop;
       list.innerHTML = `<table><tbody>${rows}</tbody>`
         + `<tfoot><tr><td>${t('total')}</td><td>${total.toFixed(1)} km</td></tr></tfoot></table>`;
       list.querySelectorAll('tbody tr').forEach((tr) => tr.onclick = () => pickDay(tr.dataset.day === pickedDay ? '' : tr.dataset.day));
       list.querySelector('tfoot tr').onclick = () => pickDay('');
+      fitRidesList(scrollTop);
     }
+
+    // Folded rides box: RIDES_SHOWN_DAYS rows, scrolling, with the total row kept at the bottom.
+    // The arrow under it shows every row or folds them again. On the first draw the latest days show;
+    // after that the scroll position stays, moved only to keep the picked day in view.
+    const RIDES_SHOWN_DAYS = 3;
+    let ridesFolded = true, ridesScrolled = false;
+    function fitRidesList(scrollTop) {
+      const list = document.getElementById('ride-list');
+      const toggle = document.getElementById('rides-toggle');
+      const dayRows = list.querySelectorAll('tbody tr');
+      const foot = list.querySelector('tfoot tr');
+      toggle.hidden = dayRows.length <= RIDES_SHOWN_DAYS;
+      // Line chevron, pointing down to unfold and up to fold.
+      toggle.innerHTML = `<svg width="20" height="12" viewBox="0 0 20 12"><polyline points="${ridesFolded ? '3,3 10,9 17,3' : '3,9 10,3 17,9'}"`
+        + ' fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" /></svg>';
+      toggle.title = t(ridesFolded ? 'showAllDays' : 'showFewerDays');
+      const folded = ridesFolded && !toggle.hidden;
+      list.classList.toggle('folded', folded);
+      list.style.maxHeight = folded ? `${dayRows[0].offsetHeight * RIDES_SHOWN_DAYS + foot.offsetHeight}px` : '';
+      if (!folded) return;
+      list.scrollTop = ridesScrolled ? scrollTop : list.scrollHeight;
+      ridesScrolled = true;
+      const row = list.querySelector('tr.selected');
+      if (!row) return;
+      const box = list.getBoundingClientRect(), r = row.getBoundingClientRect();
+      if (r.top < box.top) list.scrollTop -= box.top - r.top;
+      else if (r.bottom > box.bottom - foot.offsetHeight) list.scrollTop += r.bottom - (box.bottom - foot.offsetHeight);
+    }
+    document.getElementById('rides-toggle').onclick = () => {
+      ridesFolded = !ridesFolded;
+      ridesScrolled = false; // folding again shows the latest days
+      fitRidesList(0);
+    };
 
     // Elevation chart: all rides end to end along the distance axis, one area per ride.
     const ELEV_PAD = { top: 22, right: 16, bottom: 20, left: 48 };
