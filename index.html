@@ -84,6 +84,8 @@
     //   recorded: {mode, start, end}: points between these times were recorded on a train or ferry;
     //   unrecorded: {mode, day, path [[lat, lng], ...]}: drawn as a dashed line, no points.
     let legs = [];
+    // Notes in the rides box, from notes.json: [{from, to, icon, text {lang: text}}], days as "2026-10-12".
+    let notes = [];
     const modeAt = (iso) => legs.find((l) => l.start && new Date(l.start) <= new Date(iso) && new Date(iso) < new Date(l.end))?.mode || 'bike';
 
     // Decode a .fit file into rides: [{file, points [{date, lat, lng, speed, alt}], km, offsetMs, mode}].
@@ -366,15 +368,20 @@
         const d = days[days.length - 1];
         if (r.mode === 'bike') { d.km += r.km; d.bike = true; } else if (!d.icons.includes(MODE_ICONS[r.mode])) d.icons += ` ${MODE_ICONS[r.mode]}`;
       });
-      // Unrecorded legs (e.g. the 11 Oct ferry) get their own row when no ride is recorded that day.
-      legs.filter((l) => l.path).forEach((l) => {
-        const d = days.find((x) => x.day === l.day);
-        if (d) { if (!d.icons.includes(MODE_ICONS[l.mode])) d.icons += ` ${MODE_ICONS[l.mode]}`; return; }
-        days.push({ day: l.day, n: tripDay(l.day), label: dayMonth(`${l.day}T12:00:00Z`, 0), km: 0, bike: false, icons: ` ${MODE_ICONS[l.mode]}` });
+      // Days without a ride get their own row when an unrecorded leg or a note covers them.
+      const dayRow = (day) => days.find((x) => x.day === day)
+        || days[days.push({ day, n: tripDay(day), label: dayMonth(`${day}T12:00:00Z`, 0), km: 0, bike: false, icons: '' }) - 1];
+      const addIcon = (d, icon) => { if (!d.icons.includes(icon)) d.icons += ` ${icon}`; };
+      legs.filter((l) => l.path).forEach((l) => addIcon(dayRow(l.day), MODE_ICONS[l.mode]));
+      // A note shows in the row of each day it covers, after the icons.
+      notes.forEach((n) => {
+        for (let day = n.from; day <= n.to; day = new Date(Date.parse(day) + 86400000).toISOString().slice(0, 10)) {
+          dayRow(day).note = ` <span class="day-note">${n.icon} ${n.text[langSelect.value] || n.text.en}</span>`;
+        }
       });
       days.sort((a, b) => a.day.localeCompare(b.day));
       const rows = days.map((d) => `<tr data-day="${d.day}"${d.day === pickedDay ? ' class="selected"' : ''}>`
-        + `<td><span class="day-n">${t('dayN')(d.n)}</span> · ${d.label}${d.icons}</td><td>${d.bike ? `${d.km.toFixed(1)} km` : '–'}</td></tr>`).join('');
+        + `<td><span class="day-n">${t('dayN')(d.n)}</span> · ${d.label}${d.icons}${d.note || ''}</td><td>${d.bike ? `${d.km.toFixed(1)} km` : '–'}</td></tr>`).join('');
       const total = allRides.reduce((sum, r) => sum + (r.mode === 'bike' ? r.km : 0), 0);
       list.innerHTML = `<table><tbody>${rows}</tbody>`
         + `<tfoot><tr><td>${t('total')}</td><td>${total.toFixed(1)} km</td></tr></tfoot></table>`;
@@ -910,6 +917,8 @@
     async function loadAll() {
       const milestoneList = fetch('milestones.json').then((r) => r.json())
         .catch((e) => { console.warn('milestones', e); return []; });
+      notes = await fetch('notes.json').then((r) => r.json())
+        .catch((e) => { console.warn('notes', e); return []; });
       legs = await fetch('transport.json').then((r) => r.json())
         .catch((e) => { console.warn('transport', e); return []; }); // before parseFit, which splits rides by mode
       const files = await (await fetch('files.json')).json();
