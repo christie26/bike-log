@@ -392,18 +392,21 @@
     });
     let elev = null; // {points [{p, km}], starts [{km, ride}], totalKm, x, y}
 
-    // The device measures altitude by air pressure, from a new reference at every recording start,
-    // so rides disagree by up to ~150 m at the same place. Each ride is shifted by the median gap between
-    // terrain elevation (Open-Meteo, no key) and its own altitude at ALT_SAMPLES points; the shape stays the
-    // device's. Ferries are set to sea level. Shifts are kept in localStorage; on failure the raw altitude stays.
+    // The device measures altitude by air pressure, from a new reference at every recording start and drifting
+    // with the weather, so rides disagree by up to ~150 m at the same place. Each ride is corrected against
+    // terrain elevation (Open-Meteo, no key) at ALT_SAMPLES points: the median gap over the first half of the
+    // samples and over the second half give a shift that changes linearly in time; the shape stays the device's.
+    // Ferries are set to sea level. Shifts are kept in localStorage; on failure the raw altitude stays.
     const ELEVATION_URL = 'https://api.open-meteo.com/v1/elevation';
     const ELEVATION_MAX_COORDS = 100; // per request
-    const ALT_SAMPLES = 10;
-    const ALT_STORE = 'altOffsets-v1'; // bump when the sampling changes, to drop stale shifts
-    let altOffsets = {};
+    const ALT_SAMPLES = 20;
+    const ALT_STORE = 'altOffsets-v2'; // bump when the correction changes, to drop stale shifts
+    let altOffsets = {}; // ride key -> [t0, shift0, t1, shift1], times in ms
     try { altOffsets = JSON.parse(localStorage.getItem(ALT_STORE)) || {}; } catch {}
     const median = (xs) => { const s = [...xs].sort((a, b) => a - b); return (s[(s.length - 1) >> 1] + s[s.length >> 1]) / 2; };
-    const shiftAlt = (r, m) => r.points.forEach((p) => { if (p.alt != null) p.alt += m; });
+    const shiftAlt = (r, [t0, m0, t1, m1]) => r.points.forEach((p) => {
+      if (p.alt != null) p.alt += t1 > t0 ? m0 + (m1 - m0) * (new Date(p.date) - t0) / (t1 - t0) : m0;
+    });
 
     // Shifts stored or not needed are applied at once (before the first await); the others after the lookup.
     // Resolves true if altitudes changed after that lookup, so the chart needs a redraw.
@@ -412,7 +415,7 @@
       rides.forEach((r) => {
         const withAlt = r.points.filter((p) => p.alt != null);
         if (!withAlt.length) return;
-        if (r.mode === 'ferry') { shiftAlt(r, median(withAlt.map((p) => -p.alt))); return; }
+        if (r.mode === 'ferry') { shiftAlt(r, [0, median(withAlt.map((p) => -p.alt)), 0, 0]); return; }
         const key = `${r.file}|${r.points[0].date}`;
         if (key in altOffsets) { shiftAlt(r, altOffsets[key]); return; }
         const n = Math.min(ALT_SAMPLES, withAlt.length);
@@ -431,9 +434,11 @@
       }
       let k = 0;
       todo.forEach(({ r, key, samples }) => {
-        const gaps = samples.map((p) => terrain[k++] - p.alt).filter(Number.isFinite);
+        // Samples are in time order; each half gives a median shift at its median time.
+        const gaps = samples.map((p) => ({ t: new Date(p.date).getTime(), gap: terrain[k++] - p.alt })).filter((g) => Number.isFinite(g.gap));
         if (!gaps.length) return;
-        altOffsets[key] = median(gaps);
+        const halves = [gaps.slice(0, Math.ceil(gaps.length / 2)), gaps.slice(Math.floor(gaps.length / 2))];
+        altOffsets[key] = halves.flatMap((h) => [median(h.map((g) => g.t)), median(h.map((g) => g.gap))]);
         shiftAlt(r, altOffsets[key]);
       });
       try { localStorage.setItem(ALT_STORE, JSON.stringify(altOffsets)); } catch {}
