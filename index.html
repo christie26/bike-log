@@ -392,6 +392,54 @@
     });
     let elev = null; // {points [{p, km}], starts [{km, ride}], totalKm, x, y}
 
+    // The device measures altitude by air pressure, from a new reference at every recording start,
+    // so rides disagree by up to ~150 m at the same place. Each ride is shifted by the median gap between
+    // terrain elevation (Open-Meteo, no key) and its own altitude at ALT_SAMPLES points; the shape stays the
+    // device's. Ferries are set to sea level. Shifts are kept in localStorage; on failure the raw altitude stays.
+    const ELEVATION_URL = 'https://api.open-meteo.com/v1/elevation';
+    const ELEVATION_MAX_COORDS = 100; // per request
+    const ALT_SAMPLES = 10;
+    const ALT_STORE = 'altOffsets-v1'; // bump when the sampling changes, to drop stale shifts
+    let altOffsets = {};
+    try { altOffsets = JSON.parse(localStorage.getItem(ALT_STORE)) || {}; } catch {}
+    const median = (xs) => { const s = [...xs].sort((a, b) => a - b); return (s[(s.length - 1) >> 1] + s[s.length >> 1]) / 2; };
+    const shiftAlt = (r, m) => r.points.forEach((p) => { if (p.alt != null) p.alt += m; });
+
+    // Shifts stored or not needed are applied at once (before the first await); the others after the lookup.
+    // Resolves true if altitudes changed after that lookup, so the chart needs a redraw.
+    async function correctAltitudes(rides) {
+      const todo = [];
+      rides.forEach((r) => {
+        const withAlt = r.points.filter((p) => p.alt != null);
+        if (!withAlt.length) return;
+        if (r.mode === 'ferry') { shiftAlt(r, median(withAlt.map((p) => -p.alt))); return; }
+        const key = `${r.file}|${r.points[0].date}`;
+        if (key in altOffsets) { shiftAlt(r, altOffsets[key]); return; }
+        const n = Math.min(ALT_SAMPLES, withAlt.length);
+        const samples = Array.from({ length: n }, (_, i) => withAlt[Math.round(i * (withAlt.length - 1) / Math.max(1, n - 1))]);
+        todo.push({ r, key, samples });
+      });
+      if (!todo.length) return false;
+      const coords = todo.flatMap((j) => j.samples);
+      const terrain = [];
+      for (let i = 0; i < coords.length; i += ELEVATION_MAX_COORDS) {
+        const chunk = coords.slice(i, i + ELEVATION_MAX_COORDS);
+        const j = await (await fetch(`${ELEVATION_URL}?latitude=${chunk.map((p) => p.lat.toFixed(4)).join(',')}`
+          + `&longitude=${chunk.map((p) => p.lng.toFixed(4)).join(',')}`)).json();
+        if (!Array.isArray(j.elevation)) throw new Error(j.reason || 'no elevation');
+        terrain.push(...j.elevation);
+      }
+      let k = 0;
+      todo.forEach(({ r, key, samples }) => {
+        const gaps = samples.map((p) => terrain[k++] - p.alt).filter(Number.isFinite);
+        if (!gaps.length) return;
+        altOffsets[key] = median(gaps);
+        shiftAlt(r, altOffsets[key]);
+      });
+      try { localStorage.setItem(ALT_STORE, JSON.stringify(altOffsets)); } catch {}
+      return true;
+    }
+
     // Distance from the first ride's start to every point, stored as p.km; the chart uses points with an altitude.
     function buildProfile(rides) {
       let km = 0;
@@ -867,9 +915,11 @@
         .filter((r) => r.points.length)
         .sort((a, b) => new Date(a.points[0].date) - new Date(b.points[0].date));
       console.log(allRides);
+      const altitudes = correctAltitudes(allRides); // stored shifts apply now, before the first draw
       setMilestones(await milestoneList, allRides);
       drawMilestoneNext();
       showRides(allRides);
+      altitudes.then((changed) => { if (changed && elev) drawElevation(); }).catch((e) => console.warn('terrain elevation', e));
       queueCities(allRides.map(cityJob));
       routeMilestones(allRides);
     }
