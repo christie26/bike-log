@@ -39,7 +39,7 @@
       <button id="gb-send"></button>
     </form>
   </div>
-  <div id="elev"><svg></svg><div id="elev-tip"></div></div>
+  <div id="elev"><svg></svg><div id="elev-tip"></div><button id="elev-reset" hidden>↺</button></div>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script type="module">
     import { Decoder, Stream } from 'https://cdn.jsdelivr.net/npm/@garmin/fitsdk@21.217.0/+esm';
@@ -177,6 +177,7 @@
       document.getElementById('gb-name').placeholder = t('yourName');
       document.getElementById('gb-text').placeholder = t('yourMessage');
       document.getElementById('gb-send').textContent = t('send');
+      document.getElementById('elev-reset').title = t('resetZoom');
     }
     applyLanguage();
 
@@ -412,31 +413,68 @@
       return [1, 2, 5, 10].map((m) => m * pow).find((s) => s >= raw);
     }
 
+    // Index of the last profile point at or before km (0 if none); binary search on distance.
+    function profileIndex(km) {
+      const { points } = elev;
+      let a = 0, b = points.length - 1;
+      while (b - a > 1) { const m = (a + b) >> 1; if (points[m].km <= km) a = m; else b = m; }
+      return points[b].km <= km ? b : a;
+    }
+
+    // Zoom: elev.view = {from, to} in km, the part of the trip shown; the y axis fits the shown part.
+    const ELEV_MIN_SPAN_KM = 0.5;
+    const plotWidth = () => elevBox.clientWidth - ELEV_PAD.left - ELEV_PAD.right;
+    const kmAtPx = (px) => elev.view.from + (px - ELEV_PAD.left) / plotWidth() * (elev.view.to - elev.view.from);
+
+    // Show `span` km with anchorKm under the pixel anchorPx, kept inside the trip.
+    function setElevView(anchorKm, anchorPx, span) {
+      const total = elev.totalKm || 1;
+      span = Math.min(total, Math.max(ELEV_MIN_SPAN_KM, span));
+      const from = Math.min(total - span, Math.max(0, anchorKm - (anchorPx - ELEV_PAD.left) / plotWidth() * span));
+      elev.view = { from, to: from + span };
+      leaveElevation();
+      requestElevationDraw();
+    }
+
+    // Redraw at most once per frame: wheel and pinch events come faster than a full redraw.
+    let elevFrame = 0;
+    function requestElevationDraw() {
+      if (!elevFrame) elevFrame = requestAnimationFrame(() => { elevFrame = 0; drawElevation(); });
+    }
+
     function drawElevation() {
       if (!elev) return;
       const { points, starts, totalKm } = elev;
+      const view = elev.view ||= { from: 0, to: totalKm || 1 };
+      const zoomed = view.to - view.from < (totalKm || 1);
+      document.getElementById('elev-reset').hidden = !zoomed;
+      elevBox.classList.toggle('zoomed', zoomed);
       const w = elevBox.clientWidth, h = elevBox.clientHeight;
+      // Shown points, with one more on each side so the line reaches the edges.
+      const shown = points.slice(profileIndex(view.from), profileIndex(view.to) + 2);
       // A loop, not Math.min(...alts): spreading 100k+ points overflows the call stack.
       let minAlt = Infinity, maxAlt = -Infinity;
-      points.forEach((e) => { minAlt = Math.min(minAlt, e.p.alt); maxAlt = Math.max(maxAlt, e.p.alt); });
+      shown.forEach((e) => { minAlt = Math.min(minAlt, e.p.alt); maxAlt = Math.max(maxAlt, e.p.alt); });
       const yStep = niceStep((maxAlt - minAlt) / 3);
       const lo = Math.floor(minAlt / yStep) * yStep;
       const hi = Math.max(Math.ceil(maxAlt / yStep) * yStep, lo + yStep);
-      const x = elev.x = (km) => ELEV_PAD.left + km / (totalKm || 1) * (w - ELEV_PAD.left - ELEV_PAD.right);
+      const x = elev.x = (km) => ELEV_PAD.left + (km - view.from) / (view.to - view.from) * plotWidth();
       const y = elev.y = (alt) => h - ELEV_PAD.bottom - (alt - lo) / (hi - lo) * (h - ELEV_PAD.top - ELEV_PAD.bottom);
 
-      let svg = '';
+      // Lines and areas are clipped to the plot, so a zoomed view does not spill over the y axis.
+      let svg = `<defs><clipPath id="elev-clip"><rect x="${ELEV_PAD.left}" y="0" width="${plotWidth()}" height="${h}" /></clipPath></defs>`;
       for (let a = lo; a <= hi; a += yStep) {
         svg += `<line x1="${ELEV_PAD.left}" x2="${w - ELEV_PAD.right}" y1="${y(a)}" y2="${y(a)}" stroke="#e5e5e5" />`
           + `<text x="${ELEV_PAD.left - 6}" y="${y(a) + 4}" text-anchor="end" fill="#666">${a} m</text>`;
       }
-      const xStep = niceStep(totalKm / Math.max(1, Math.floor((w - ELEV_PAD.left - ELEV_PAD.right) / 80)));
-      for (let km = 0; km <= totalKm; km += xStep) {
+      const xStep = niceStep((view.to - view.from) / Math.max(1, Math.floor(plotWidth() / 80)));
+      for (let km = Math.ceil(view.from / xStep) * xStep; km <= view.to; km += xStep) {
         svg += `<text x="${x(km)}" y="${h - 5}" text-anchor="middle" fill="#666">${+km.toFixed(2)} km</text>`;
       }
+      svg += '<g clip-path="url(#elev-clip)">';
       // One area and line per ride, so a gap between days is not bridged; train and ferry legs in gray.
       starts.forEach((s) => {
-        const pts = points.filter((e) => e.ride === s.ride);
+        const pts = shown.filter((e) => e.ride === s.ride);
         if (!pts.length) return;
         const line = pts.map((e, i) => `${i ? 'L' : 'M'}${x(e.km).toFixed(1)},${y(e.p.alt).toFixed(1)}`).join('');
         const base = y(lo);
@@ -445,11 +483,13 @@
           + `<path d="${line}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round" />`;
       });
       // One date line per day, at the start of its first ride.
-      const dayStarts = starts.filter((s, i) => !i || rideDay(starts[i - 1].ride) !== rideDay(s.ride));
+      const dayStarts = starts.filter((s, i) => (!i || rideDay(starts[i - 1].ride) !== rideDay(s.ride))
+        && s.km >= view.from && s.km <= view.to);
       dayStarts.forEach((s) => {
         svg += `<line x1="${x(s.km)}" x2="${x(s.km)}" y1="${ELEV_PAD.top - 4}" y2="${y(lo)}" stroke="#bbb" stroke-dasharray="3 3" />`
           + `<text x="${x(s.km) + 4}" y="${ELEV_PAD.top - 8}" fill="#666">${dayMonth(s.ride.points[0].date, s.ride.offsetMs)}</text>`;
       });
+      svg += '</g>';
       svg += `<line id="elev-cross" y1="${ELEV_PAD.top}" y2="${y(lo)}" stroke="#666" visibility="hidden" />`
         + `<circle id="elev-dot" r="4" fill="#ffffff" stroke="${HOVER_COLOR}" stroke-width="2" visibility="hidden" />`;
       elevSvg.innerHTML = svg;
@@ -457,13 +497,11 @@
 
     // Nearest profile point to the pointer: crosshair and tooltip on the chart, marker on the map.
     function hoverElevation(ev) {
-      if (!elev) return;
-      const { points, totalKm } = elev;
+      if (!elev || !elev.points.length) return;
+      const { points } = elev;
       const w = elevBox.clientWidth;
-      const px = ev.clientX - elevBox.getBoundingClientRect().left;
-      const km = (px - ELEV_PAD.left) / (w - ELEV_PAD.left - ELEV_PAD.right) * totalKm;
-      let a = 0, b = points.length - 1; // binary search on distance
-      while (b - a > 1) { const m = (a + b) >> 1; if (points[m].km < km) a = m; else b = m; }
+      const km = kmAtPx(ev.clientX - elevBox.getBoundingClientRect().left);
+      const a = profileIndex(km), b = Math.min(a + 1, points.length - 1);
       const e = Math.abs(points[a].km - km) <= Math.abs(points[b].km - km) ? points[a] : points[b];
       const cx = elev.x(e.km), cy = elev.y(e.p.alt);
       const cross = document.getElementById('elev-cross'), dot = document.getElementById('elev-dot');
@@ -517,8 +555,51 @@
       hoverMarker.remove();
     }
 
-    elevBox.addEventListener('pointermove', hoverElevation);
+    // Zoom on the chart: wheel zooms around the pointer (sideways scroll pans), mouse drag pans,
+    // two fingers pinch and pan, double-click or the reset button shows the whole trip.
+    // One finger on a touch screen still moves the hover point.
+    const elevPx = (clientX) => clientX - elevBox.getBoundingClientRect().left;
+    let elevDrag = null; // mouse drag: {km} under the pointer when pressed
+    const elevTouches = new Map(); // pointerId -> clientX
+
+    elevBox.addEventListener('wheel', (ev) => {
+      if (!elev) return;
+      ev.preventDefault();
+      const px = elevPx(ev.clientX), span = elev.view.to - elev.view.from;
+      if (Math.abs(ev.deltaX) > Math.abs(ev.deltaY)) setElevView(kmAtPx(px + ev.deltaX), px, span);
+      else setElevView(kmAtPx(px), px, span * Math.exp(ev.deltaY * 0.002));
+    }, { passive: false });
+
+    elevBox.addEventListener('pointerdown', (ev) => {
+      if (!elev || ev.target.closest('#elev-reset')) return;
+      if (ev.pointerType === 'mouse') {
+        if (ev.button === 0) { elevDrag = { km: kmAtPx(elevPx(ev.clientX)) }; elevBox.setPointerCapture(ev.pointerId); }
+      } else elevTouches.set(ev.pointerId, ev.clientX);
+    });
+
+    elevBox.addEventListener('pointermove', (ev) => {
+      if (!elev) return;
+      const span = elev.view.to - elev.view.from;
+      if (elevDrag) { setElevView(elevDrag.km, elevPx(ev.clientX), span); return; }
+      if (elevTouches.has(ev.pointerId) && elevTouches.size === 2) {
+        const [a, b] = [...elevTouches.values()];
+        const oldCenter = elevPx((a + b) / 2), oldDist = Math.abs(a - b);
+        elevTouches.set(ev.pointerId, ev.clientX);
+        const [c, d] = [...elevTouches.values()];
+        const newCenter = elevPx((c + d) / 2), newDist = Math.abs(c - d);
+        setElevView(kmAtPx(oldCenter), newCenter, span * Math.max(oldDist, 1) / Math.max(newDist, 1));
+        return;
+      }
+      hoverElevation(ev);
+    });
+
+    const endElevPointer = (ev) => { elevDrag = null; elevTouches.delete(ev.pointerId); };
+    elevBox.addEventListener('pointerup', endElevPointer);
+    elevBox.addEventListener('pointercancel', endElevPointer);
     elevBox.addEventListener('pointerleave', leaveElevation);
+    const resetElevation = () => { if (elev) { elev.view = null; leaveElevation(); drawElevation(); } };
+    elevBox.addEventListener('dblclick', resetElevation);
+    document.getElementById('elev-reset').onclick = resetElevation;
     window.addEventListener('resize', drawElevation);
 
     // Milestones from milestones.json, in travel order: [{name, lat, lng}].

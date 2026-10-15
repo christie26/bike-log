@@ -5,6 +5,12 @@ body { display: flex; flex-direction: column; }
 #elev { position: relative; height: 140px; flex: none; background: #fff; box-shadow: 0 -1px 4px rgba(0, 0, 0, .2);
   font: 12px sans-serif; touch-action: none; z-index: 1000; }
 #elev svg { display: block; width: 100%; height: 100%; }
+#elev.zoomed { cursor: grab; }
+#elev.zoomed:active { cursor: grabbing; }
+/* Shows the whole trip again; visible only while the chart is zoomed */
+#elev-reset { position: absolute; top: 4px; right: 8px; width: 26px; height: 26px; padding: 0; border: 0; border-radius: 50%;
+  background: #fff; box-shadow: 0 1px 4px rgba(0, 0, 0, .3); font: 16px sans-serif; color: #333; cursor: pointer; }
+#elev-reset[hidden] { display: none; }
 #elev-tip { position: absolute; top: 4px; display: none; pointer-events: none; white-space: nowrap; color: #222;
   background: #fff; padding: 3px 8px; border-radius: 4px; box-shadow: 0 1px 4px rgba(0, 0, 0, .3); }
 #rides { position: absolute; top: 80px; left: 10px; z-index: 1000; background: #fff; padding: 8px 12px; border-radius: 12px;
