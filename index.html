@@ -37,6 +37,7 @@
     <form id="gb-form">
       <input id="gb-name" maxlength="40" required />
       <textarea id="gb-text" maxlength="500" required></textarea>
+      <button id="gb-export" type="button">⬇ Export messages (JSON)</button>
       <button id="gb-send"></button>
     </form>
   </div>
@@ -1023,6 +1024,27 @@
       drawMessages();
     }
 
+    function exportMessages() {
+      const json = JSON.stringify(messages, null, 2);
+      const blob = new Blob([json], {
+        type: 'application/json;charset=utf-8'
+      });
+
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+
+      a.href = url;
+      a.download = `guestbook-messages-${new Date()
+        .toISOString().slice(0, 10)}.json`;
+
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+
+      URL.revokeObjectURL(url);
+    }
+
+    document.getElementById('gb-export').onclick = exportMessages;
     async function startGuestbook() {
       try { await loadMessages(); } catch (e) { console.warn('guestbook', e); return; }
       setInterval(() => loadMessages().catch((e) => console.warn('guestbook', e)), MESSAGES_REFRESH_MS);
